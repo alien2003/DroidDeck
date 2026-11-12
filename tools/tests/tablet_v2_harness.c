@@ -68,7 +68,7 @@ struct tool_proxy {
     uint32_t type, serial;
     struct zwp_tablet_v2 *in_tablet;
     struct wl_surface *in_surface;
-    int leaving;
+    int leaving, events;
 };
 struct binding {
     struct client *c;
@@ -110,6 +110,7 @@ static const char *tool_label(struct tool_proxy *t) { return t->type == ERASER ?
 static struct client *in_proximity(void *d) {
     struct tool_proxy *p = d;
     assert(p->in_surface);
+    p->events++;
     return p->c;
 }
 
@@ -141,6 +142,7 @@ static void tool_in(void *d, struct zwp_tablet_tool_v2 *t, uint32_t serial, stru
     p->serial = serial;
     p->in_tablet = tablet;
     p->in_surface = surface;
+    p->events++;
     assert(serial >= p->c->last_serial);
     p->c->last_serial = serial;
     note(p->c, "in:%s", tool_label(p));
@@ -150,12 +152,14 @@ static void tool_out(void *d, struct zwp_tablet_tool_v2 *t) {
     assert(p->in_surface);
     p->in_surface = NULL;
     p->leaving = 1;
+    p->events++;
     note(p->c, "out:%s", tool_label(p));
 }
 static void tool_down(void *d, struct zwp_tablet_tool_v2 *t, uint32_t serial) {
     struct tool_proxy *p = d;
     assert(p->in_surface && serial > p->c->last_serial);
     p->c->last_serial = serial;
+    p->events++;
     note(p->c, "down");
 }
 static void tool_up(void *d, struct zwp_tablet_tool_v2 *t) { note(in_proximity(d), "up"); }
@@ -174,12 +178,14 @@ static void tool_button(void *d, struct zwp_tablet_tool_v2 *t, uint32_t serial, 
     struct tool_proxy *p = d;
     assert(p->in_surface && serial > p->c->last_serial);
     p->c->last_serial = serial;
+    p->events++;
     note(p->c, "button=%#x,%u", button, state);
 }
 static void tool_frame(void *d, struct zwp_tablet_tool_v2 *t, uint32_t time) {
     struct tool_proxy *p = d;
-    assert(p->in_surface || p->leaving);
+    assert((p->in_surface || p->leaving) && p->events > 0);
     p->leaving = 0;
+    p->events = 0;
     note(p->c, "frame=%u", time);
 }
 static const struct zwp_tablet_tool_v2_listener tool_listener = {
@@ -413,7 +419,7 @@ static void hover_in_motion_frame(void) {
     frame(s, p);
     p.time_ms = 104;
     frame(s, p);
-    expect(a, "frame=103 frame=104");
+    expect(a, "");
     droiddeck_tablet_out(105);
     pump();
     expect(a, "out:pen frame=105");
@@ -425,7 +431,7 @@ static void hover_in_motion_frame(void) {
     expect(a, "in:pen motion=11.00,20.25 pressure=0 tilt=10.50,-20.00 frame=107");
     p.distance = 5000; p.time_ms = 108;
     frame(s, p);
-    expect(a, "frame=108");
+    expect(a, "");
 }
 
 static void down_with_pressure_and_tilt(void) {
@@ -753,7 +759,7 @@ static void rebind_in_proximity(void) {
     expect(b, TABLET_V2 " " PEN_PT);
     p.time_ms = 6;
     frame(sb, p);
-    expect(b, "frame=6");
+    expect(b, "");
     zwp_tablet_v2_destroy(b->bindings[0].tablet);
     pump();
     assert(droiddeck_tablet_client_has_tool(b->server_side, PEN));
@@ -766,6 +772,52 @@ static void rebind_in_proximity(void) {
     expect(a, "");
 }
 
+static void repeated_sample(void) {
+    droiddeck_tablet_set_capabilities(CAPS_PT);
+    droiddeck_tablet_ensure_tool(PEN);
+    struct client *a = tablet_client(2), *b = tablet_client(2);
+    struct wl_resource *s = make_surface(a, NULL), *sb = make_surface(b, NULL);
+    expect(a, TABLET_V2 " " PEN_PT);
+    expect(b, TABLET_V2 " " PEN_PT);
+    struct droiddeck_pen p = hover(PEN, 4, 5, 10);
+    frame(s, p);
+    expect(a, "in:pen motion=4.00,5.00 pressure=0 tilt=0.00,0.00 frame=10");
+    droiddeck_tablet_pending_flush();
+    frame(s, p);
+    p.time_ms = 11;
+    frame(s, p);
+    expect(a, "");
+    assert(!droiddeck_tablet_pending_flush());
+    p.has_tilt = 1; p.tilt_x = 12; p.tilt_y = -3; p.time_ms = 12;
+    frame(s, p);
+    p.has_tilt = 0; p.time_ms = 13;
+    frame(s, p);
+    expect(a, "tilt=12.00,-3.00 frame=12");
+    p.down = 1; p.pressure = 100; p.time_ms = 14;
+    frame(s, p);
+    p.time_ms = 15;
+    frame(s, p);
+    p.buttons = DROIDDECK_PEN_RIGHT; p.time_ms = 16;
+    frame(s, p);
+    frame(s, p);
+    expect(a, "pressure=100 down frame=14 button=0x14c,1 frame=16");
+    p.down = 0; p.pressure = 0; p.buttons = 0; p.time_ms = 17;
+    frame(s, p);
+    frame(s, p);
+    expect(a, "pressure=0 up button=0x14c,0 frame=17");
+    p.time_ms = 18;
+    frame(sb, p);
+    frame(sb, p);
+    expect(a, "out:pen frame=18");
+    expect(b, "in:pen motion=4.00,5.00 pressure=0 tilt=12.00,-3.00 frame=18");
+    droiddeck_tablet_out(19);
+    pump();
+    expect(b, "out:pen frame=19");
+    p.time_ms = 20;
+    frame(s, p);
+    expect(a, "in:pen motion=4.00,5.00 pressure=0 tilt=12.00,-3.00 frame=20");
+}
+
 int main(int argc, char **argv) {
     static const struct { const char *name; void (*run)(void); } cases[] = {
         {"bind", bind_before_and_after}, {"description", description}, {"tools", lazy_tools},
@@ -773,6 +825,7 @@ int main(int argc, char **argv) {
         {"grab", implicit_grab}, {"focus", focus_change}, {"eraser", eraser_and_pen}, {"cursor", set_cursor},
         {"surface", surface_destroyed_while_down}, {"disconnect", disconnect_mid_stroke}, {"late", late_bind},
         {"bindings", two_bindings}, {"toolgone", tool_destroyed_in_proximity}, {"rebind", rebind_in_proximity},
+        {"repeat", repeated_sample},
     };
     assert(argc == 2);
     server = wl_display_create();

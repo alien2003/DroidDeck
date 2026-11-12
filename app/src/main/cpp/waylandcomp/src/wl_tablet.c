@@ -301,8 +301,10 @@ void droiddeck_tablet_frame(struct wl_resource *surface, const struct droiddeck_
     const int distance = (t->caps & DROIDDECK_PEN_CAP_DISTANCE) && (t->fresh || pen->distance != t->distance);
     const int tilt = (t->caps & DROIDDECK_PEN_CAP_TILT) && (t->fresh || tx != t->tilt_x || ty != t->tilt_y);
     const int down = pen->down ? 1 : 0;
+    const uint32_t buttons = pen->buttons & ((1u << PEN_BUTTONS) - 1);
+    const int changed = motion || pressure || distance || tilt || down != t->down || buttons != t->buttons;
     wl_resource_for_each(r, &t->resources) {
-        if (!entered(t, r)) continue;
+        if (!changed || !entered(t, r)) continue;
         if (motion) zwp_tablet_tool_v2_send_motion(r, x, y);
         if (pressure) zwp_tablet_tool_v2_send_pressure(r, pen->pressure);
         if (distance) zwp_tablet_tool_v2_send_distance(r, pen->distance);
@@ -310,20 +312,20 @@ void droiddeck_tablet_frame(struct wl_resource *surface, const struct droiddeck_
         if (down && !t->down) zwp_tablet_tool_v2_send_down(r, wl_display_next_serial(g_disp));
         else if (!down && t->down) zwp_tablet_tool_v2_send_up(r);
         for (int i = 0; i < PEN_BUTTONS; i++)
-            if ((pen->buttons ^ t->buttons) & (1u << i))
+            if ((buttons ^ t->buttons) & (1u << i))
                 zwp_tablet_tool_v2_send_button(r, wl_display_next_serial(g_disp), k_buttons[i],
-                                               pen->buttons & (1u << i) ? ZWP_TABLET_TOOL_V2_BUTTON_STATE_PRESSED
-                                                                       : ZWP_TABLET_TOOL_V2_BUTTON_STATE_RELEASED);
+                                               buttons & (1u << i) ? ZWP_TABLET_TOOL_V2_BUTTON_STATE_PRESSED
+                                                                   : ZWP_TABLET_TOOL_V2_BUTTON_STATE_RELEASED);
         zwp_tablet_tool_v2_send_frame(r, pen->time_ms);
+        g_sent = 1;
     }
     t->x = x; t->y = y;
     t->tilt_x = tx; t->tilt_y = ty;
     t->pressure = pen->pressure;
     t->distance = pen->distance;
     t->down = down;
-    t->buttons = pen->buttons & ((1u << PEN_BUTTONS) - 1);
+    t->buttons = buttons;
     t->fresh = 0;
-    g_sent = 1;
 }
 
 void droiddeck_tablet_out(uint32_t time_ms) {

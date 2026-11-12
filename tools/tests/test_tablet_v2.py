@@ -51,8 +51,11 @@ class TabletV2Test(unittest.TestCase):
     def test_tools_are_announced_lazily_with_pressure_tilt_and_distance_only_when_capable_and_never_rotation(self):
         self.check_case('tools')
 
-    def test_hover_enters_with_motion_pressure_and_tilt_then_sends_only_changed_axes_one_frame_per_sample(self):
+    def test_hover_enters_with_motion_pressure_and_tilt_then_sends_only_changed_axes_and_no_frame_without_them(self):
         self.check_case('hover')
+
+    def test_a_repeated_sample_sends_no_empty_frame_and_every_proximity_in_frame_carries_the_full_state(self):
+        self.check_case('repeat')
 
     def test_tip_down_carries_pressure_and_tilt_and_lifts_with_up(self):
         self.check_case('down')
