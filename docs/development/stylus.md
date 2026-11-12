@@ -335,13 +335,16 @@ tablet handling (Ubuntu `0006`/`0007`, Arch `0005`/`0006`).
   for those programs. X11 programs get the pen from Xwayland, which binds tablet-v2 and creates
   `xwayland-tablet stylus/eraser` devices attached to the core pointer.
 - **Xwayland.** Ubuntu's Xwayland 24.1.10 has a regression: tablet events go to the root window unless the
-  `wl_pointer` is over an X11 surface, so X11 programs get only raw events. Upstream fixed it in 24.1.11
-  (03228e00 and 0ca92fb4), which the runtime carries as `tools/ubuntu/patches/xwayland/0001-0002` until Ubuntu
-  ships it. Separately, Xwayland never shows the X11 window's cursor for a tablet tool: the server sets the cursor
-  through the master pointer, which Xwayland ignores, and the tablet slave then sees no change. Patch 0003
-  invalidates the master's sprite on tablet `proximity_in`, as Xwayland already does on pointer enter. On the
-  device, Kate under X11 shows the arrow and the I-beam for the pen, takes the caret, a selection and the
-  side-button menu, and `xinput test-xi2` gets `Motion` and `ButtonPress` from the tablet device.
+  `wl_pointer` is over an X11 surface, so X11 programs get only raw events. Upstream fixed it in 24.1.11 with
+  0ca92fb4; the runtime carries it as `tools/ubuntu/patches/xwayland/0002`, after 03228e00 (`0001`, the revert of
+  a pointer-only check that KWin tripped over) so that it applies as upstream has it. Separately, a tablet tool
+  can keep a hidden cursor over X11 windows: on `proximity_in` the tool gets the seat's current X cursor, which is
+  unset when the window's cursor became the sprite's cursor before any Xwayland input device had sent an event
+  (Xwayland ignores it then, while the server marks it as shown), and motion over windows with the same cursor
+  changes nothing. Patch 0003, DroidDeck's own, invalidates the master's sprite on tablet `proximity_in`, as
+  Xwayland already does on pointer enter. On the device, Kate under X11 shows the arrow and the I-beam for the pen,
+  takes the caret, a selection and the side-button menu, and `xinput test-xi2` gets `Motion` and `ButtonPress`
+  from the tablet device.
 - **KWin's tablet fixes.** A side button is followed by a `frame`, so clients apply it at once; a tool at (0,0)
   keeps its focus; the tip release goes to the window that got the press before focus moves; a tool that moves onto
   a title bar, an internal window or the empty desktop leaves the client surface, and one that comes back gets
@@ -429,8 +432,8 @@ On the device (validation report below):
 - **KWin tablet bugs.** KWin 6.6 and 6.8 have open tablet fixes upstream (merge requests 9785 and 9883). DroidDeck
   carries its own minimal fixes for the cases the pen hits; they need a rebase when those merge requests land. The
   host never sends a down or a button without its release.
-- **Xwayland patches.** The runtime rebuilds Xwayland until Ubuntu ships 24.1.11; patch 0003 is DroidDeck's own
-  and is not upstream yet.
+- **Xwayland patches.** Patches 0001-0002 can go when Ubuntu ships 24.1.11. Patch 0003 is DroidDeck's own and is in
+  no Xwayland release, so the runtime rebuilds Xwayland until it is upstream and released.
 - **Programs without tablet-v2 in the desktop** depend on KWin's deprecated emulation, which drops side buttons.
   Mouse mode is the workaround.
 - **Hover cursor cost**: KWin repaints its output while a pen hovers.

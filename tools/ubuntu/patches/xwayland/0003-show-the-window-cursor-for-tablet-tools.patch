@@ -3,13 +3,18 @@ From: alien2003 <11610652+alien2003@users.noreply.github.com>
 Date: Thu, 12 Nov 2026 16:00:00 +0000
 Subject: [PATCH] xwayland: Show the window cursor for tablet tools
 
-A tablet tool over an X11 window gets a NULL cursor and keeps it. The
-DIX sets the window's cursor through the master pointer, which has no
-xwl_seat, so xwl_set_cursor() ignores it while miPointer records it as
-shown. The tablet device's own sprite updates then see no change, and
-xwl_seat->x_cursor stays NULL unless the mouse is over an X11 surface.
-Invalidate the sprite on proximity in, as pointer enter does, so the
-next tablet motion sets the cursor for the tool.
+On proximity in, a tablet tool gets the seat's current X cursor, which
+can be unset while the DIX considers the window's cursor shown. That
+happens when the cursor became the sprite's cursor while the master
+pointer had no xwl_seat yet, for example a window mapped under the
+initial sprite position when Xwayland starts on demand and no device
+has sent an event yet: xwl_set_cursor() ignores it, but miPointer marks
+it as displayed. Later motion over windows with the same cursor then
+changes nothing, so the tool keeps a hidden cursor until it crosses into
+a window with a different one.
+
+Invalidate the master's sprite on proximity in, as pointer enter does,
+so the next tablet motion sets the cursor again.
 ---
  hw/xwayland/xwayland-input.c | 2 ++
  1 file changed, 2 insertions(+)

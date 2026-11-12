@@ -23,8 +23,9 @@ Steam on the desktop). The app installs it into `files/linuxfs` and runs it unde
   leaves the window it was over.
 - `patches/xwayland`: `0001` and `0002` are Olivier Fourdan's upstream fixes from Xwayland 24.1.11
   (03228e00 and 0ca92fb4) for Ubuntu's 24.1.10, without which an X11 window under the pen gets no pen
-  events unless the mouse pointer is over it too. `0003` gives the pen the X11 window's cursor: without
-  it Xwayland hides the cursor of a tablet tool over every X11 window.
+  events unless the mouse pointer is over an X11 window. `0003` is DroidDeck's own and is in no
+  Xwayland release: it gives the pen the X11 window's cursor, which Xwayland otherwise leaves hidden
+  when the window's cursor was set before any Xwayland input device had sent an event.
 - The runtime's built-in Vulkan driver is DroidDeck's DD-Turnip Linux build (`DD_TURNIP_URL` and
   `DD_TURNIP_SHA256` in `base.env`): Ubuntu's Turnip is diverted to `libvulkan_freedreno.so.distrib`
   because it lacks the Adreno 8xx fixes. Zink, EGL and llvmpipe stay Ubuntu's.
