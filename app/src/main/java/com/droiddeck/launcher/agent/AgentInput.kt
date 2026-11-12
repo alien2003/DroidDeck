@@ -23,6 +23,7 @@ object AgentInput {
             "pad" -> pad(request)
             "stick" -> stick(request)
             "trigger" -> trigger(request)
+            "pen" -> AgentPen.handle(request)
             else -> throw AgentException("INVALID_INPUT", "Unknown input type '$type'")
         }.put("ok", true).put("command", "input").put("type", request.optString("type"))
     }

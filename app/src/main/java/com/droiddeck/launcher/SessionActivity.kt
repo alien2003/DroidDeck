@@ -270,6 +270,7 @@ class SessionActivity : ComponentActivity(), SurfaceHolder.Callback {
     private var penSettings by mutableStateOf(SessionPrefs.Pen())
     private var penSeen by mutableStateOf(false)
     private var penRoute: PenRouter.Route? = null
+    private var penEventRoute: PenRouter.Route? = null
     private var penTablet = false
     private var penDown = false
     private val penCursor = PenCursorPolicy()
@@ -281,6 +282,18 @@ class SessionActivity : ComponentActivity(), SurfaceHolder.Callback {
         }
         override fun capabilities(capabilities: Int) = WaylandCompositor.nativeSendPenCapabilities(capabilities)
     })
+    private val agentPen = object : com.droiddeck.launcher.agent.AgentPen.Sink {
+        override fun area(): android.graphics.RectF? = pointerSurfaceRect()
+        override fun hover(event: MotionEvent) {
+            bottomGame?.takeIf { bottomOutputActive }?.dispatchGenericMotionEvent(event) ?: dispatchGenericMotionEvent(event)
+        }
+        override fun touch(event: MotionEvent) {
+            bottomGame?.takeIf { bottomOutputActive }?.dispatchTouchEvent(event) ?: dispatchTouchEvent(event)
+        }
+        override fun announceTilt() = penStream.announce(PenStream.capabilities(tilt = true, distanceSpan = null))
+        override fun takeRoute(): PenRouter.Route? = penEventRoute.also { penEventRoute = null }
+        override fun tablet(): Boolean = PenCursorPolicy.tablet(penTablet, WaylandCompositor.nativePenRoute())
+    }
     private val palmGate = PalmGate { Log.i(TAG, it) }
     private val palmFilter = PalmFilter(palmGate, ::deliverTouch)
     private val bottomPalmFilter = PalmFilter(palmGate) { bottomGame?.deliverTouch(it) ?: false }
@@ -787,6 +800,7 @@ class SessionActivity : ComponentActivity(), SurfaceHolder.Callback {
         refreshInputProfile()
         bridge.setOnChordInput(backQamInput::onChordInput)
         SessionState.padBridge = bridge
+        SessionState.penSink = agentPen
         if (Build.VERSION.SDK_INT >= 31) {
             val vr = com.droiddeck.launcher.input.JoyConVr(this, File(filesDir, ".wayland-rt/${com.droiddeck.launcher.input.JoyConVr.FILE}")) { taken, released ->
                 if (joyConVr == null) return@JoyConVr
@@ -4219,6 +4233,7 @@ class SessionActivity : ComponentActivity(), SurfaceHolder.Callback {
         val starts = own && (action == MotionEvent.ACTION_DOWN || action == MotionEvent.ACTION_POINTER_DOWN)
         val route = penRoute.takeIf { penDown && !starts } ?: decidePen()
         if (own) penDown = starts
+        penEventRoute = route
         return route
     }
 
@@ -5670,6 +5685,7 @@ class SessionActivity : ComponentActivity(), SurfaceHolder.Callback {
         heldButtons.clear()
         steamController?.stop()
         if (SessionState.padBridge === padBridge) SessionState.padBridge = null
+        if (SessionState.penSink === agentPen) SessionState.penSink = null
         padMotion?.stop()
         if (SessionState.deckPadListener === deckPadListener) SessionState.deckPadListener = null
         if (SessionState.endListener === endListener) SessionState.endListener = null

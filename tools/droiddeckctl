@@ -31,6 +31,15 @@ AUTHORITY = f"content://{PACKAGE}.agent"
 PACKAGE_NAME = re.compile(r"[A-Za-z][A-Za-z0-9_]*(\.[A-Za-z][A-Za-z0-9_]*)+")
 STEAM_CLIENT_APP = 769
 REQUEST_CAP = 256 * 1024
+# adb frames a shell command for its server with a four-hex-digit length; the rest of 64 KiB is for the service prefix
+ADB_COMMAND_CAP = 60 * 1024
+PEN_RATE = 120
+PEN_HOVER_MS = 80
+PEN_MAX_SAMPLES = 4096
+PEN_MAX_MS = 30_000
+PEN_MAX_BATCH = 8
+PEN_PHASES = ("hover", "down", "move", "up", "out", "cancel")
+PEN_BUTTONS = ("primary", "secondary")
 
 
 class ControlError(RuntimeError):
@@ -576,8 +585,231 @@ def require_commands(adb: str, serial: str) -> dict:
     return access
 
 
+def pen_span(value: str) -> tuple[float, float]:
+    parts = value.split(":")
+    try:
+        if len(parts) > 2:
+            raise ValueError(value)
+        return float(parts[0]), float(parts[-1])
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"{value!r} is not a number or FROM:TO") from None
+
+
+def pen_times(start: float, duration: float, rate: float) -> list[float]:
+    steps = max(1, round(duration * rate / 1000))
+    return [start + duration * i / steps for i in range(steps + 1)]
+
+
+def pen_lerp(span: tuple[float, float], fraction: float) -> float:
+    return span[0] + (span[1] - span[0]) * fraction
+
+
+def pen_samples(args: argparse.Namespace) -> tuple[list[dict], list[dict]]:
+    for name in ("duration", "hold", "hover_ms"):
+        if getattr(args, name, 0) < 0:
+            raise ControlError(f"--{name.replace('_', '-')} must not be negative", "INVALID_INPUT")
+    if not 1 <= args.rate <= 1000:
+        raise ControlError("--rate must be 1..1000 Hz", "INVALID_INPUT")
+    rate = args.rate
+    op = args.pen_op
+    if op == "hover":
+        end = args.duration
+    elif op == "button":
+        end = 2 * PEN_HOVER_MS + args.hold
+    else:
+        end = 2 * args.hover_ms + (args.hold if op == "tap" else args.duration)
+    if end > PEN_MAX_MS:
+        raise ControlError(f"the gesture lasts {end} ms, more than {PEN_MAX_MS}", "INVALID_INPUT")
+    timeline: list[tuple[float, str, float, float, float | None, list[str]]] = []
+
+    def hover(times, x, y, buttons=()):
+        timeline.extend((t, "hover", x, y, None, list(buttons)) for t in times)
+
+    if op == "hover":
+        x2, y2 = args.to if args.to else (args.x, args.y)
+        times = pen_times(0, args.duration, rate)
+        for t in times:
+            f = t / (times[-1] or 1)
+            hover([t], pen_lerp((args.x, x2), f), pen_lerp((args.y, y2), f))
+        if not args.keep:
+            timeline.append((times[-1], "out", x2, y2, None, []))
+    elif op == "button":
+        lead = PEN_HOVER_MS
+        hover(pen_times(0, lead, rate)[:-1], args.x, args.y)
+        hover(pen_times(lead, args.hold, rate)[:-1], args.x, args.y, [args.button])
+        after = pen_times(lead + args.hold, lead, rate)
+        hover(after, args.x, args.y)
+        timeline.append((after[-1], "out", args.x, args.y, None, []))
+    else:
+        if op == "tap":
+            start, end, length, pressure = (args.x, args.y), (args.x, args.y), args.hold, (args.pressure, args.pressure)
+        else:
+            start, end, length, pressure = (args.x1, args.y1), (args.x2, args.y2), args.duration, args.pressure
+        lead = args.hover_ms
+        if lead > 0:
+            hover(pen_times(0, lead, rate)[:-1], *start)
+        contact = pen_times(lead, length, rate)
+        for i, t in enumerate(contact):
+            phase = "down" if i == 0 else "up" if i == len(contact) - 1 else "move"
+            f = (t - lead) / length if length else 1.0 if phase == "up" else 0.0
+            timeline.append((t, phase, pen_lerp((start[0], end[0]), f), pen_lerp((start[1], end[1]), f), pen_lerp(pressure, f), []))
+        up = contact[-1]
+        if lead > 0:
+            hover(pen_times(up, lead, rate)[1:], *end)
+        timeline.append((up + lead, "out", end[0], end[1], None, []))
+
+    total = timeline[-1][0] or 1
+    digits = 5 if args.space == "fraction" else 2
+    samples = []
+    for t, phase, x, y, pressure, buttons in timeline:
+        sample = {"t": round(t), "phase": phase, "x": round(x, digits), "y": round(y, digits), "buttons": buttons}
+        if pressure is not None:
+            sample["pressure"] = round(pressure, 4)
+        if args.distance is not None:
+            sample["distance"] = args.distance
+        if args.tilt_x is not None:
+            sample["tiltX"] = round(pen_lerp(args.tilt_x, t / total), 2)
+        if args.tilt_y is not None:
+            sample["tiltY"] = round(pen_lerp(args.tilt_y, t / total), 2)
+        samples.append(sample)
+    fingers = []
+    if args.finger:
+        fingers = [{"t": round(total * 0.25), "phase": "down", "id": 0, "x": args.finger[0], "y": args.finger[1]},
+                   {"t": round(total * 0.75), "phase": "up", "id": 0}]
+    return samples, fingers
+
+
+def pen_compact(samples: list[dict]) -> list[dict]:
+    """Drop every field that repeats the previous sample's; the app carries fields over."""
+    compact, last = [], {"buttons": []}
+    for sample in samples:
+        entry = {"t": sample["t"], "phase": sample["phase"]}
+        for key, value in sample.items():
+            if key not in entry and last.get(key) != value:
+                entry[key] = last[key] = value
+        compact.append(entry)
+    return compact
+
+
+def validate_pen(request: dict) -> None:
+    """The checks AgentPen makes on the device, so a bad gesture never reaches adb."""
+    def fail(message: str) -> None:
+        raise ControlError(message, "INVALID_INPUT")
+
+    def number(entry: dict, key: str, where: str, low: float, high: float, rule: str) -> float | None:
+        if key not in entry:
+            return None
+        value = entry[key]
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or value != value or abs(value) == float("inf"):
+            fail(f"{where}: {key} is not a number")
+        if not low <= value <= high:
+            fail(f"{where}: {key} {value:g} must be {rule}")
+        return value
+
+    def time(entry: dict, where: str, previous: float) -> float:
+        t = number(entry, "t", where, 0, PEN_MAX_MS, f"0..{PEN_MAX_MS} ms")
+        if t is None:
+            fail(f"{where}: t is required")
+        if t < previous:
+            fail(f"{where}: t {t:g} is before the previous {previous:g}")
+        return t
+
+    space = request.get("space", "output")
+    if space not in ("output", "fraction"):
+        fail(f"space {space!r} is not output or fraction")
+    extent = 1 if space == "fraction" else float("inf")
+    rule = "0..1" if space == "fraction" else "0 or more"
+    if request.get("tool", "pen") not in ("pen", "eraser"):
+        fail(f"tool {request.get('tool')!r} is not pen or eraser")
+    batch = request.get("batch", 1)
+    if not isinstance(batch, int) or not 1 <= batch <= PEN_MAX_BATCH:
+        fail(f"batch {batch} must be 1..{PEN_MAX_BATCH}")
+    samples = request.get("samples") or []
+    if not samples:
+        fail("samples is empty")
+    if len(samples) > PEN_MAX_SAMPLES:
+        fail(f"the gesture has {len(samples)} samples, more than {PEN_MAX_SAMPLES}; lower --rate or shorten it")
+    t, near, down, has_x, has_y = 0.0, False, False, False, False
+    for index, sample in enumerate(samples):
+        where = f"sample {index}"
+        t = time(sample, where, t)
+        phase = sample.get("phase")
+        if phase not in PEN_PHASES:
+            fail(f"{where}: phase {phase!r} is not one of {'|'.join(PEN_PHASES)}")
+        has_x |= number(sample, "x", where, 0, extent, rule) is not None
+        has_y |= number(sample, "y", where, 0, extent, rule) is not None
+        if not (has_x and has_y):
+            fail(f"{where}: x and y are required on the first sample")
+        number(sample, "pressure", where, 0, 1, "0..1")
+        number(sample, "distance", where, 0, float("inf"), "0 or more")
+        number(sample, "tiltX", where, -90, 90, "-90..90")
+        number(sample, "tiltY", where, -90, 90, "-90..90")
+        for button in sample.get("buttons", []):
+            if button not in PEN_BUTTONS:
+                fail(f"{where}: button {button!r} is not primary or secondary")
+        if phase in ("hover", "out") and down:
+            fail(f"{where}: {phase} while the pen is down; lift it with up first")
+        if phase in ("move", "up", "cancel") and not down:
+            fail(f"{where}: {phase} needs a down first")
+        if phase == "down" and down:
+            fail(f"{where}: down while the pen is already down")
+        if phase == "out" and not near:
+            fail(f"{where}: out needs a hover first")
+        down = phase in ("down", "move")
+        near = phase in ("hover", "down", "move", "up")
+    if down:
+        fail("the samples end with the pen down; lift it with up or cancel")
+    fingers = request.get("fingers") or []
+    if len(fingers) > PEN_MAX_SAMPLES:
+        fail(f"fingers holds {len(fingers)} entries, more than {PEN_MAX_SAMPLES}")
+    t, held = 0.0, set()
+    for index, finger in enumerate(fingers):
+        where = f"finger {index}"
+        t = time(finger, where, t)
+        finger_id = finger.get("id")
+        if not isinstance(finger_id, int) or not 0 <= finger_id <= 9:
+            fail(f"{where}: id {finger_id} must be 0..9")
+        for key in ("x", "y"):
+            number(finger, key, where, 0, extent, rule)
+        phase = finger.get("phase")
+        if phase == "down":
+            if finger_id in held:
+                fail(f"{where}: finger {finger_id} is already down")
+            if "x" not in finger or "y" not in finger:
+                fail(f"{where}: x and y are required for down")
+            held.add(finger_id)
+        elif phase in ("move", "up"):
+            if finger_id not in held:
+                fail(f"{where}: finger {finger_id} is not down")
+            if phase == "up":
+                held.discard(finger_id)
+        else:
+            fail(f"{where}: phase {phase!r} is not down, move or up")
+    if held:
+        fail(f"fingers {', '.join(map(str, sorted(held)))} are still down at the end; lift them with up")
+
+
+def pen_request(args: argparse.Namespace) -> dict:
+    if not 1 <= args.batch <= PEN_MAX_BATCH:
+        raise ControlError(f"--batch must be 1..{PEN_MAX_BATCH}", "INVALID_INPUT")
+    samples, fingers = pen_samples(args)
+    request = {"type": "pen", "via": args.via, "space": args.space, "tool": args.tool, "batch": args.batch,
+               "samples": pen_compact(samples)}
+    if fingers:
+        request["fingers"] = fingers
+    validate_pen(request)
+    size = len(base64.b64encode(json.dumps(request, separators=(",", ":")).encode()))
+    size += len(f"content call --uri {AUTHORITY} --method input --extra request:s:")
+    if size > ADB_COMMAND_CAP:
+        raise ControlError(f"The pen gesture makes a {size // 1024} KiB adb command, over the {ADB_COMMAND_CAP // 1024} KiB "
+                           "adb takes; shorten it or lower --rate", "INVALID_INPUT")
+    return request
+
+
 def input_request(args: argparse.Namespace) -> dict:
     kind = args.input_type
+    if kind == "pen":
+        return pen_request(args)
     if kind == "key":
         return {"type": "key", "key": args.key, "action": args.action, "modifiers": args.mod or [], "holdMs": args.hold}
     if kind == "text":
@@ -1095,6 +1327,41 @@ def build_parser() -> argparse.ArgumentParser:
     trigger.add_argument("trigger", choices=["left", "right"])
     trigger.add_argument("value", type=float, nargs="?", default=1.0)
     trigger.add_argument("--hold", type=int, default=200)
+    pen = kinds.add_parser("pen", help="a pen: hover, tap, stroke or a side button, with pressure, tilt and the eraser")
+    pen_ops = pen.add_subparsers(dest="pen_op", required=True)
+    pen_hover = pen_ops.add_parser("hover", help="hover at X Y (to X2 Y2) and leave unless --keep")
+    pen_hover.add_argument("x", type=float)
+    pen_hover.add_argument("y", type=float)
+    pen_hover.add_argument("--to", type=float, nargs=2, metavar=("X2", "Y2"))
+    pen_hover.add_argument("--duration", type=int, default=300)
+    pen_hover.add_argument("--keep", action="store_true", help="stay in proximity (the app drops a pen silent for 2 s)")
+    pen_tap = pen_ops.add_parser("tap", help="hover, touch down at X Y, lift and leave")
+    pen_tap.add_argument("x", type=float)
+    pen_tap.add_argument("y", type=float)
+    pen_tap.add_argument("--pressure", type=float, default=0.5)
+    pen_tap.add_argument("--hold", type=int, default=60, help="ms in contact")
+    pen_tap.add_argument("--hover-ms", type=int, default=PEN_HOVER_MS, help="ms of hover before and after contact")
+    pen_stroke = pen_ops.add_parser("stroke", help="draw a line from X1 Y1 to X2 Y2")
+    for name in ("x1", "y1", "x2", "y2"):
+        pen_stroke.add_argument(name, type=float)
+    pen_stroke.add_argument("--duration", type=int, default=300)
+    pen_stroke.add_argument("--pressure", type=pen_span, default=(0.5, 0.5), metavar="P|P0:P1")
+    pen_stroke.add_argument("--hover-ms", type=int, default=PEN_HOVER_MS, help="ms of hover before and after contact")
+    pen_button = pen_ops.add_parser("button", help="press and release a side button while hovering at X Y")
+    pen_button.add_argument("button", choices=PEN_BUTTONS)
+    pen_button.add_argument("x", type=float)
+    pen_button.add_argument("y", type=float)
+    pen_button.add_argument("--hold", type=int, default=120)
+    for op in (pen_hover, pen_tap, pen_stroke, pen_button):
+        op.add_argument("--space", choices=["output", "fraction"], default="output")
+        op.add_argument("--tool", choices=["pen", "eraser"], default="pen")
+        op.add_argument("--tilt-x", type=pen_span, metavar="DEG[:DEG]")
+        op.add_argument("--tilt-y", type=pen_span, metavar="DEG[:DEG]")
+        op.add_argument("--distance", type=float, help="hover distance (AXIS_DISTANCE)")
+        op.add_argument("--rate", type=float, default=PEN_RATE, help="samples per second")
+        op.add_argument("--batch", type=int, default=1, help="samples per event, the older ones as history")
+        op.add_argument("--finger", type=float, nargs=2, metavar=("X", "Y"), help="a finger down for the middle half")
+        op.add_argument("--via", choices=["pipeline"], default="pipeline", help="pipeline: the app's own input path")
 
     ui = commands.add_parser("ui", help="the app's own UI: dump nodes, click or type by test tag")
     ui_ops = ui.add_subparsers(dest="ui_op", required=True)
@@ -1202,6 +1469,7 @@ EXIT_SESSION = {
     "SESSION_ACTIVE", "NO_ACTIVE_SESSION", "SESSION_NOT_SUSPENDED", "SESSION_FAILED", "GUEST_EXIT",
     "GUEST_START_FAILED", "RUNTIME_INSTALL_FAILED", "DESKTOP_INSTALL_FAILED", "ACTIVITY_START_FAILED",
     "NO_STEAM_SESSION", "SESSION_NOT_READY", "AGENT_UNAVAILABLE", "LAUNCH_REJECTED", "NO_PAD", "NO_FRAMES",
+    "NO_PEN_SINK",
 }
 EXIT_TIMEOUT = {"TIMEOUT", "ARTIFACT_TIMEOUT"}
 EXIT_FILE = {"NO_SESSION_LOGS", "LOG_PULL_FAILED", "LOG_CLEANUP_FAILED", "SCREENSHOT_FAILED", "FILE_IO", "RECORD_FAILED", "PUSH_FAILED",
@@ -1241,6 +1509,8 @@ def main(argv: list[str] | None = None) -> int:
                 raise ControlError(str(exc), "FILE_IO") from exc
             print(json.dumps(result, indent=2, sort_keys=True))
             return 0
+        if args.command == "input":
+            input_request(args)
         adb = adb_path(args.adb)
         serial = resolve_serial(adb, args.serial, log=True)
         result = execute(args, adb, serial)

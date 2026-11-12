@@ -146,6 +146,8 @@ class PenStream(private val sink: Sink) {
             send(capabilities(device, InputDevice.SOURCE_STYLUS))
     }
 
+    fun announce(capabilities: Int) = send(capabilities)
+
     fun deviceRemoved(deviceId: Int) {
         if (deviceId == this.deviceId) cancel()
         if (!keyDown || deviceId != keyDevice) return

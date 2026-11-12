@@ -125,6 +125,7 @@ object SessionState {
     @Volatile var deckPadListener: (() -> Unit)? = null
 
     @Volatile var padBridge: com.droiddeck.launcher.input.PadBridge? = null
+    @Volatile var penSink: com.droiddeck.launcher.agent.AgentPen.Sink? = null
 
     @Volatile var secondScreenMode = com.droiddeck.launcher.input.SecondScreenMode.NONE
     @Volatile var secondScreenDisplay = -1

@@ -122,6 +122,11 @@ tools/droiddeckctl input swipe 100 600 100 100 --duration 400
 tools/droiddeckctl input pad a
 tools/droiddeckctl input stick left 0 -1 --hold 500
 tools/droiddeckctl input trigger right 1.0
+tools/droiddeckctl input pen tap 0.5 0.5 --space fraction --pressure 0.7
+tools/droiddeckctl input pen stroke 200 300 900 500 --pressure 0.2:0.9 --tilt-x 30 --duration 600
+tools/droiddeckctl input pen hover 400 300 --to 600 300 --duration 500
+tools/droiddeckctl input pen button primary 400 300 --hold 200
+tools/droiddeckctl input pen hover 0.5 0.5 --space fraction --duration 600 --finger 0.2 0.8
 
 tools/droiddeckctl ui dump
 tools/droiddeckctl ui click rail-steam
@@ -195,6 +200,73 @@ every 10 s until the battery is under that temperature, so runs being compared s
 virtual pad, the same one the on-screen controls drive, so games that ignore touch still respond.
 `launch`, `quit` and `cdp` need a Steam session; `focus` and `wait focused` need gamescope (every
 mode except the desktop).
+
+`input pen` draws with a synthetic pen. `hover` comes near at a point (and glides to `--to`), then
+leaves unless `--keep`; `tap` and `stroke` hover for `--hover-ms` (80), touch down, lift and leave;
+`button` holds a side button while hovering. Every command takes `--space output|fraction`,
+`--tool pen|eraser`, `--tilt-x`/`--tilt-y` in degrees, `--distance`, `--rate` (120 samples a second),
+`--batch` and `--finger X Y`. `FROM:TO` values interpolate over the contact (pressure) or the whole
+gesture (tilt); a range that starts negative needs `=`, as in `--tilt-x=-30:30`.
+
+With `--via pipeline`, the default, the session screen builds the `MotionEvent`s a built-in pen
+produces and dispatches them on its main thread through `dispatchGenericMotionEvent` (hover and
+buttons) and `dispatchTouchEvent` (contact) of the window that shows the game, so with the game on
+the bottom screen the pen draws there. The Pen, Palm rejection, Side button and Pressure
+settings and the tablet or pointer choice therefore all apply. Each event has one stylus
+or eraser pointer, source touchscreen and stylus, pressure, distance, and `AXIS_TILT` and
+`AXIS_ORIENTATION` derived from the tilt with Android's own formula. The order is Android's:
+`HOVER_ENTER` and a move when the pen comes near, `HOVER_EXIT` and `DOWN` at the same time when it
+lands, and `UP` then `HOVER_ENTER` when it lifts but stays near. `UP` repeats the last contact,
+so an `up` sample is where the pen last touches: when it moves or changes pressure or tilt, a
+`MOVE` there comes first. A button change while hovering sends `ACTION_BUTTON_PRESS` or
+`RELEASE`; in contact only `buttonState` changes. Every stroke gets its own down time on the
+uptime clock. `--batch N` packs N samples into one event, the older ones as history. `--finger`
+puts a finger down for the middle half of the gesture as a touchscreen stream from a separate
+device, which is how the Find N6 reports pen and fingers. As Android does for such fingers, the
+pen wins: a finger gesture that is down when the pen comes near or lands gets `ACTION_CANCEL`
+with `FLAG_CANCELED` and nothing after it, and one that starts while the pen touches is not sent
+at all. One that starts while the pen hovers is sent, and Palm rejection decides. With `--finger`
+a `tap` at its default `--hold` lands the finger while the pen hovers; a `stroke` at least twice
+`--hover-ms` long lands it during contact.
+
+Positions are on the session's picture as drawn, mapped back through the rectangle a real pen is
+mapped through; `tap` and `swipe` use the whole output, which differs only when the picture is
+letterboxed. Synthetic events have no input device: when the gesture tilts, tilt is announced to
+the compositor before the first sample, and `--distance` reaches the `MotionEvent` but the
+compositor gets 0, as for a pen whose device has no distance range. A pen that stays silent for
+2 s counts as gone, so `--keep` lasts that long. Real pen and finger input is not paused and
+interleaves with the agent's.
+
+The request is `{"type":"pen","via":"pipeline","space","tool","batch","samples":[...],"fingers":[...]}`.
+A sample is `{t, phase, x, y, pressure, distance, tiltX, tiltY, buttons}`: `phase` is `hover`,
+`down`, `move`, `up`, `out` or `cancel`, `t` is milliseconds from the start and never decreases,
+`buttons` lists `primary` and `secondary`, and every field except `t` and `phase` carries over from
+the previous sample (pressure starts at 0.5, distance and tilt at 0, no buttons). A finger is `{t, phase, id, x, y}` with `phase` `down`, `move` or `up`. The
+limits are 4096 samples (and 4096 finger entries), 30 s, `batch` 1 to 8, pressure 0 to 1, tilt
+-90 to 90, distance 0 or more and finger ids 0 to 9. The pen moves and lifts only after a `down`,
+may land from hover, after `out` or at the start, and the gesture must end with the pen and every
+finger lifted. The CLI checks all of this before adb, except whether output positions fit the
+output, and the app checks it again; either refuses with `INVALID_INPUT` (exit 2), as does the CLI
+for a gesture whose adb command would pass 60 KiB. adb hands a shell command to its server with a
+four-hex-digit length, so that command, not the 256 KiB request limit, bounds a gesture: about 7.5 s
+of a stroke in output positions at the default rate, under 5 s in fractions with pressure and tilt
+ranges. The 64 KiB comes from adb's source and is not yet measured on a device.
+`NO_PEN_SINK` (exit 4) means the session runs but its screen is not open.
+
+The answer comes once the main thread has dispatched the last event:
+`{"via":"pipeline","samples":N,"events":M,"ms":T,"route":R}`. `route` is what the app did with the
+pen, at the last `down`, or at the last hover event when the pen never touched. For a hover it is
+the pen router's choice even where a panel of the app's own, such as the PC keyboard or the touch
+editor, takes the hover events:
+
+| `route` | Meaning |
+|---|---|
+| `tablet` | The pen route with Pen set to Auto in the desktop, and the compositor reports that the client under the pen takes tablet input |
+| `pointer` | The pen route as a pointer: Pen set to Mouse, a Steam session, or a client without tablet input |
+| `relative` | The glasses own the output or a program holds a pointer lock: the pen drives the touchpad |
+| `touch` | Pen set to Touch: the pen takes the finger route |
+| `blocked` | The drawer, achievements or an input settings panel is open, or the session is suspended |
+| `ui` | No pen event reached the pen router: the app's own UI, on-screen controls or picture-in-picture took them |
 
 ## State (schema 2)
 

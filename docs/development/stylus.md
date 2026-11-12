@@ -422,9 +422,11 @@ Xwayland) would give Proton drawing programs Wintab pressure; it is left out of 
 ## Agent tooling
 
 - `droiddeckctl input pen hover|tap|stroke|button` builds pen samples (position, pressure, tilt, tool, buttons).
-  The bridge turns them into `MotionEvent`s on the main thread and feeds them to `PenInput`, so modes, palm
-  rejection and button mapping are exercised. `--via uinput` instead registers a virtual pen with
-  `adb shell uinput -`, which tests Android's own mapping (hover, tilt, buttons, eraser, batching) end to end.
+  The bridge turns them into `MotionEvent`s on the main thread in the order Android sends them and dispatches them
+  through `SessionActivity`'s own entry points to `PenStream`, so modes, palm rejection and button mapping are
+  exercised. The synthetic events have no input device, so the bridge announces tilt itself. `--via uinput`
+  instead registers a virtual pen with `adb shell uinput -`, which tests Android's own mapping (hover, tilt,
+  buttons, eraser, batching) end to end.
 - A `droiddeck-scenario` scenario draws strokes in the desktop and checks them with `wev` and `xinput test-xi2`
   run inside the session. The compositor's `test-input` FIFO is not used: `droiddeck-desktop` removes it.
 
