@@ -1,5 +1,6 @@
 package com.droiddeck.launcher.input
 
+import android.hardware.input.InputManager
 import android.os.Looper
 import android.view.InputDevice
 import android.view.MotionEvent
@@ -27,6 +28,7 @@ import org.robolectric.Shadows.shadowOf
 import org.robolectric.annotation.Config
 import org.robolectric.annotation.Implementation
 import org.robolectric.annotation.Implements
+import org.robolectric.shadows.InputDeviceBuilder
 import org.robolectric.shadows.ShadowInputDevice
 import org.robolectric.util.ReflectionHelpers
 
@@ -305,6 +307,57 @@ class SessionPenRoutingTest {
         activity.onTouchEvent(event(MotionEvent.ACTION_UP, 30_050, pen to 500f))
         assertEquals(listOf(PointerGestures.BTN_LEFT), pad.presses)
         assertTrue(CompositorShadow.pens.isEmpty())
+    }
+
+    @Test fun theFirstPenEventRemembersThatThePhoneHasAPen() {
+        invoke("readPrefs")
+        assertFalse(state<Boolean>("penSeen").value)
+        assertTrue(activity.dispatchGenericMotionEvent(event(MotionEvent.ACTION_HOVER_MOVE, 10, pen to 500f)))
+        assertTrue(state<Boolean>("penSeen").value)
+        assertTrue(SessionPrefs.penSeen(activity))
+    }
+
+    @Config(sdk = [34])
+    @Test fun aConnectedStylusDeviceCountsAsSeenBeforeAnyPenEvent() {
+        invoke("readPrefs")
+        assertFalse(state<Boolean>("penSeen").value)
+        shadowOf(activity.getSystemService(InputManager::class.java)).addInputDevice(
+            InputDeviceBuilder.newBuilder().setId(42).setName("digitizer").setSources(stylusScreen).build())
+        invoke("readPrefs")
+        assertTrue(state<Boolean>("penSeen").value)
+        assertTrue(SessionPrefs.penSeen(activity))
+    }
+
+    @Config(sdk = [33])
+    @Test fun beforeAndroid14ATouchscreenWithTheStylusBitWaitsForAPenEvent() {
+        shadowOf(activity.getSystemService(InputManager::class.java)).addInputDevice(
+            ShadowInputDevice.makeInputDeviceNamed("touchscreen").also {
+                ReflectionHelpers.setField(it, "mId", 42)
+                ReflectionHelpers.setField(it, "mSources", stylusScreen)
+            })
+        assertEquals(listOf(42), InputDevice.getDeviceIds().toList())
+        invoke("readPrefs")
+        assertFalse(state<Boolean>("penSeen").value)
+        assertFalse(SessionPrefs.penSeen(activity))
+        assertTrue(activity.dispatchGenericMotionEvent(event(MotionEvent.ACTION_HOVER_MOVE, 10, pen to 500f)))
+        assertTrue(state<Boolean>("penSeen").value)
+    }
+
+    @Test fun changingAnyPenSettingEndsThePenAndRereadingTheSameSettingsDoesNot() {
+        assertTrue(activity.dispatchGenericMotionEvent(event(MotionEvent.ACTION_HOVER_MOVE, 10, pen to 500f)))
+        invoke("readPrefs")
+        assertEquals(PEN_IN or PEN_TABLET, CompositorShadow.pens.last().flags)
+        var time = 20L
+        for ((key, value) in listOf("penPalm" to SessionPrefs.PEN_PALM_OFF, "penButton" to SessionPrefs.PEN_BUTTON_MIDDLE,
+                "penPressure" to SessionPrefs.PEN_PRESSURE_FIRM)) {
+            assertTrue(activity.dispatchGenericMotionEvent(event(MotionEvent.ACTION_HOVER_MOVE, time, pen to 500f)))
+            time += 10
+            SessionPrefs.setPenSetting(activity, key, value)
+            invoke("readPrefs")
+            assertEquals(key, PEN_CANCEL or PEN_TABLET, CompositorShadow.pens.last().flags)
+        }
+        assertEquals(SessionPrefs.Pen(palm = SessionPrefs.PEN_PALM_OFF, button = SessionPrefs.PEN_BUTTON_MIDDLE,
+            pressure = SessionPrefs.PEN_PRESSURE_FIRM), state<SessionPrefs.Pen>("penSettings").value)
     }
 
     @Test fun aStylusDeviceIsNotAHardwareMouse() {

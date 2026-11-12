@@ -236,6 +236,9 @@ class DrawerActions(
     val onPadType: (String) -> Unit = {},
     val touchMode: String,
     val touchAuto: String,
+    val pen: SessionPrefs.Pen? = null,
+    val penAuto: String = "",
+    val onPen: (key: String, value: String) -> Unit = { _, _ -> },
     val fexPreset: String,
     val upscaler: Int = 0,
     val upscaleSharpness: Int = 75,
@@ -641,6 +644,10 @@ internal fun SessionDrawer(open: Boolean, requestedPage: SessionDrawerPage, cont
                                         a.directHoldBehavior, chipModifier = focus.track(page, "long-press"),
                                         onPick = a.onDirectHoldBehavior)
                                 }
+                            }
+                            a.pen?.let { pen ->
+                                PenSettingsGroup(host, pen, stringResource(R.string.drawer_touch_auto, a.penAuto), a.desktop,
+                                    track = { key -> focus.track(page, key) }, onPick = a.onPen)
                             }
                             SettingsGroup(stringResource(R.string.input_screen_visibility)) {
                                 ChoiceRow(host, "osc", stringResource(R.string.mode_osc), null,

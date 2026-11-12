@@ -35,6 +35,10 @@ class SettingsResetTest {
         SessionPrefs.setTheme(app, "ocean")
         SessionPrefs.setBackDoubleTapMs(app, 100)
         SessionPrefs.setPenMode(app, SessionPrefs.PEN_MOUSE)
+        SessionPrefs.setPenSetting(app, "penPalm", SessionPrefs.PEN_PALM_OFF)
+        SessionPrefs.setPenSetting(app, "penButton", SessionPrefs.PEN_BUTTON_ERASER)
+        SessionPrefs.setPenSetting(app, "penPressure", SessionPrefs.PEN_PRESSURE_FIRM)
+        SessionPrefs.setPenSeen(app)
         SessionPrefs.setUnfoldedControlsWithController(app, true)
         SessionPrefs.setNoXalia(app, false)
         session.edit().putInt("fpsLimit.steam", 30).commit()
@@ -59,7 +63,8 @@ class SettingsResetTest {
 
         assertEquals("graphite", SessionPrefs.theme(app))
         assertEquals(500, SessionPrefs.backDoubleTapMs(app))
-        assertEquals(SessionPrefs.PEN_AUTO, SessionPrefs.penMode(app))
+        assertEquals(SessionPrefs.Pen(), SessionPrefs.pen(app))
+        assertTrue(SessionPrefs.penSeen(app))
         assertFalse(SessionPrefs.unfoldedControlsWithController(app))
         assertTrue(SessionPrefs.noXalia(app))
         assertFalse(session.contains("fpsLimit.steam"))
@@ -92,6 +97,32 @@ class SettingsResetTest {
         session.edit().putString("pen", "tablet").commit()
         assertEquals(SessionPrefs.PEN_AUTO, SessionPrefs.penMode(app))
         assertThrows(IllegalArgumentException::class.java) { SessionPrefs.setPenMode(app, "tablet") }
+    }
+
+    @Test fun penPalmButtonAndPressureAreSettingsThatKeepOnlyKnownValues() {
+        val settings = listOf(
+            Triple("penPalm", SessionPrefs.PEN_PALM_NEAR, listOf(SessionPrefs.PEN_PALM_SCROLL, SessionPrefs.PEN_PALM_OFF)),
+            Triple("penButton", SessionPrefs.PEN_BUTTON_RIGHT,
+                listOf(SessionPrefs.PEN_BUTTON_MIDDLE, SessionPrefs.PEN_BUTTON_ERASER, SessionPrefs.PEN_BUTTON_OFF)),
+            Triple("penPressure", SessionPrefs.PEN_PRESSURE_NORMAL, listOf(SessionPrefs.PEN_PRESSURE_SOFT, SessionPrefs.PEN_PRESSURE_FIRM)),
+        )
+        fun read(key: String) = when (key) {
+            "penPalm" -> SessionPrefs.penPalm(app)
+            "penButton" -> SessionPrefs.penButton(app)
+            else -> SessionPrefs.penPressure(app)
+        }
+        for ((key, default, others) in settings) {
+            assertTrue(key, SettingsReset.isSessionSetting(key))
+            assertEquals(key, default, read(key))
+            for (value in others) {
+                SessionPrefs.setPenSetting(app, key, value)
+                assertEquals(key, value, read(key))
+            }
+            session.edit().putString(key, "left").commit()
+            assertEquals(key, default, read(key))
+            assertThrows(IllegalArgumentException::class.java) { SessionPrefs.setPenSetting(app, key, "left") }
+        }
+        assertFalse(SettingsReset.isSessionSetting("penSeen"))
     }
 
     @Test fun aFailedDebugOptOutDoesNotHideTheEnabledPreference() {

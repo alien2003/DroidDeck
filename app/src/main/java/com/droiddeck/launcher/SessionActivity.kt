@@ -265,7 +265,8 @@ class SessionActivity : ComponentActivity(), SurfaceHolder.Callback {
     private var steamTouchOptions: com.droiddeck.launcher.input.SteamTouchConfig.Options? = null
     private var routedTouchMode = SessionPrefs.TOUCH_AUTO
     private var touchRoute: com.droiddeck.launcher.input.TouchRouter.Route? = null
-    private var penMode = SessionPrefs.PEN_AUTO
+    private var penSettings by mutableStateOf(SessionPrefs.Pen())
+    private var penSeen by mutableStateOf(false)
     private var penRoute: PenRouter.Route? = null
     private var penTablet = false
     private var penDown = false
@@ -654,6 +655,7 @@ class SessionActivity : ComponentActivity(), SurfaceHolder.Callback {
     private val deviceListener = object : InputManager.InputDeviceListener {
         override fun onInputDeviceAdded(deviceId: Int) {
             logInputDevice("connected", deviceId)
+            if (!penSeen && InputDevice.getDevice(deviceId)?.let { PenStream.isPenDevice(it.sources) } == true) notePenSeen()
             joyConVr?.refresh()
             padBridge?.syncConnectedControllers()
             refreshControls()
@@ -1262,6 +1264,9 @@ class SessionActivity : ComponentActivity(), SurfaceHolder.Callback {
             micEnabled = SessionState.micEnabled,
             onMicEnabled = { SessionService.setMicEnabled(this@SessionActivity, it) },
             touchAuto = getString(if (usingTouchpad()) R.string.session_touch_auto_touchpad else R.string.session_touch_auto_direct),
+            pen = penSettings.takeIf { penSeen },
+            penAuto = getString(if (penSeen && penAutoIsTablet()) R.string.session_pen_auto_tablet else R.string.session_pen_auto_mouse),
+            onPen = { key, value -> SessionPrefs.setPenSetting(this@SessionActivity, key, value); readPrefs() },
             fexPreset = fexPreset,
             secondScreenMode = secondScreenMode,
             secondScreenNone = !bottomOutputActive && !dockDrawer(),
@@ -1988,9 +1993,10 @@ class SessionActivity : ComponentActivity(), SurfaceHolder.Callback {
             if (nextTouchMode == SessionPrefs.TOUCH_OFF || !usingTouchpad()) cursorVisible = false
         }
         touchMode = nextTouchMode
-        val nextPenMode = SessionPrefs.penMode(this)
-        if (penMode != nextPenMode) cancelPen()
-        penMode = nextPenMode
+        val nextPen = SessionPrefs.pen(this)
+        if (penSettings != nextPen) cancelPen()
+        penSettings = nextPen
+        if (!penSeen && (SessionPrefs.penSeen(this) || PenStream.stylusConnected())) notePenSeen()
         val nextRoutedTouchMode = effectiveTouchMode()
         if (routedTouchMode != nextRoutedTouchMode) gestureTouchStreamGate.reset()
         routedTouchMode = nextRoutedTouchMode
@@ -2368,6 +2374,11 @@ class SessionActivity : ComponentActivity(), SurfaceHolder.Callback {
     private fun cancelPen() {
         penStream.cancel()
         penDown = false
+    }
+
+    private fun notePenSeen() {
+        penSeen = true
+        SessionPrefs.setPenSeen(this)
     }
 
     private fun panelBounds(): android.graphics.Rect = if (Build.VERSION.SDK_INT >= 30) {
@@ -4150,6 +4161,7 @@ class SessionActivity : ComponentActivity(), SurfaceHolder.Callback {
     }
 
     private fun routePen(event: MotionEvent, pen: Int): PenRouter.Route {
+        if (!penSeen) notePenSeen()
         val action = event.actionMasked
         if (action == MotionEvent.ACTION_HOVER_ENTER || action == MotionEvent.ACTION_HOVER_MOVE || action == MotionEvent.ACTION_HOVER_EXIT) penDown = false
         val own = action == MotionEvent.ACTION_DOWN || action == MotionEvent.ACTION_UP || action == MotionEvent.ACTION_CANCEL ||
@@ -4161,11 +4173,12 @@ class SessionActivity : ComponentActivity(), SurfaceHolder.Callback {
     }
 
     private fun decidePen(): PenRouter.Route {
-        val route = PenRouter.decide(uiBlocksTouch(), penMode, glassesOutputActive, programLocksPointer())
-        penTablet = PenRouter.wantsTablet(route, penMode, SessionState.mode)
+        val mode = penSettings.mode
+        val route = PenRouter.decide(uiBlocksTouch(), mode, glassesOutputActive, programLocksPointer())
+        penTablet = PenRouter.wantsTablet(route, mode, SessionState.mode)
         if (route != penRoute) {
             if (penRoute == PenRouter.Route.PEN) penStream.cancel()
-            Log.i(TAG, "pen route $penRoute -> $route (mode=$penMode)")
+            Log.i(TAG, "pen route $penRoute -> $route (mode=$mode)")
             penRoute = route
         }
         return route
@@ -4216,6 +4229,9 @@ class SessionActivity : ComponentActivity(), SurfaceHolder.Callback {
         }
         return true
     }
+
+    private fun penAutoIsTablet(): Boolean = CompositorHost.isStarted &&
+        PenRouter.autoIsTablet(SessionState.mode, glassesOutputActive, programLocksPointer(), WaylandCompositor.nativePenRoute())
 
     private fun penCursorLeft() {
         val restore = penCursor.restoreOnLeave() ?: return

@@ -152,7 +152,11 @@ Stored as `SessionPrefs` key `"pen"`, global like `"touch"`, default `auto`.
 
 The settings sit next to the touch mode: the Steam and Desktop page sheet, **Controls** tab, and the session
 drawer, **Controller** page, as a "Pen" group after "Touchscreen". The group is shown only when a stylus device
-exists or a pen event was seen. Every key is in `SettingsReset.SESSION_KEYS`; the device report gets a pen line.
+exists or a pen event was seen; the first of either sets `penSeen`, which a settings reset keeps. Before Android 14
+every touchscreen whose driver reports a tool type has the stylus source, pen or not, so there a touchscreen counts
+only with its first pen event. Side button is hidden in Touch, and Pressure is shown only for Auto in the desktop,
+the one place a tablet gets it. Every key in the table is in `SettingsReset.SESSION_KEYS`; the device report gets
+a line for each.
 
 | Setting | Key | Values | Default | Scenario |
 |---|---|---|---|---|

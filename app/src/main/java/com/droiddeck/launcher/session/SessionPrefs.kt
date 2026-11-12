@@ -475,14 +475,51 @@ object SessionPrefs {
     const val PEN_AUTO = "auto"
     const val PEN_MOUSE = "mouse"
     const val PEN_TOUCH = "touch"
-    private val PEN_MODES = setOf(PEN_AUTO, PEN_MOUSE, PEN_TOUCH)
+    const val PEN_PALM_NEAR = "near"
+    const val PEN_PALM_SCROLL = "scroll"
+    const val PEN_PALM_OFF = "off"
+    const val PEN_BUTTON_RIGHT = "right"
+    const val PEN_BUTTON_MIDDLE = "middle"
+    const val PEN_BUTTON_ERASER = "eraser"
+    const val PEN_BUTTON_OFF = "off"
+    const val PEN_PRESSURE_SOFT = "soft"
+    const val PEN_PRESSURE_NORMAL = "normal"
+    const val PEN_PRESSURE_FIRM = "firm"
 
-    fun penMode(context: Context): String =
-        prefs(context).getString("pen", PEN_AUTO)?.takeIf { it in PEN_MODES } ?: PEN_AUTO
+    data class Pen(
+        val mode: String = PEN_AUTO,
+        val palm: String = PEN_PALM_NEAR,
+        val button: String = PEN_BUTTON_RIGHT,
+        val pressure: String = PEN_PRESSURE_NORMAL,
+    )
 
-    fun setPenMode(context: Context, mode: String) {
-        require(mode in PEN_MODES)
-        prefs(context).edit().putString("pen", mode).apply()
+    private val PEN_SETTINGS = mapOf(
+        "pen" to setOf(PEN_AUTO, PEN_MOUSE, PEN_TOUCH),
+        "penPalm" to setOf(PEN_PALM_NEAR, PEN_PALM_SCROLL, PEN_PALM_OFF),
+        "penButton" to setOf(PEN_BUTTON_RIGHT, PEN_BUTTON_MIDDLE, PEN_BUTTON_ERASER, PEN_BUTTON_OFF),
+        "penPressure" to setOf(PEN_PRESSURE_SOFT, PEN_PRESSURE_NORMAL, PEN_PRESSURE_FIRM),
+    )
+
+    private fun penSetting(context: Context, key: String, default: String): String =
+        prefs(context).getString(key, default)?.takeIf { it in PEN_SETTINGS.getValue(key) } ?: default
+
+    fun setPenSetting(context: Context, key: String, value: String) {
+        require(value in PEN_SETTINGS.getValue(key))
+        prefs(context).edit().putString(key, value).apply()
+    }
+
+    fun penMode(context: Context): String = penSetting(context, "pen", PEN_AUTO)
+    fun setPenMode(context: Context, mode: String) = setPenSetting(context, "pen", mode)
+    fun penPalm(context: Context): String = penSetting(context, "penPalm", PEN_PALM_NEAR)
+    fun penButton(context: Context): String = penSetting(context, "penButton", PEN_BUTTON_RIGHT)
+    fun penPressure(context: Context): String = penSetting(context, "penPressure", PEN_PRESSURE_NORMAL)
+
+    fun pen(context: Context): Pen = Pen(penMode(context), penPalm(context), penButton(context), penPressure(context))
+
+    fun penSeen(context: Context): Boolean = prefs(context).getBoolean("penSeen", false)
+
+    fun setPenSeen(context: Context) {
+        if (!penSeen(context)) prefs(context).edit().putBoolean("penSeen", true).apply()
     }
 
     const val SHAPE_AUTO = "auto"

@@ -59,6 +59,14 @@ class PenRouterTest {
         }
     }
 
+    @Test fun theDrawerCallsAutoATabletOnlyWhereTheDesktopGivesTheAppUnderThePenATablet() {
+        for (session in sessions) for (glasses in flags) for (lock in flags)
+            for (route in listOf(0, PenCursorPolicy.ROUTE_POINTER, PenCursorPolicy.ROUTE_TABLET)) {
+                val expected = session == SessionService.MODE_DESKTOP && !glasses && !lock && route == PenCursorPolicy.ROUTE_TABLET
+                assertEquals("$session $glasses $lock $route", expected, PenRouter.autoIsTablet(session, glasses, lock, route))
+            }
+    }
+
     @Test fun anUnknownModeIsAMouse() {
         val s = PenRouter.Snapshot(false, "tablet", SessionService.MODE_DESKTOP, false, false, false)
         assertEquals(PenRouter.Route.PEN, PenRouter.decide(s))

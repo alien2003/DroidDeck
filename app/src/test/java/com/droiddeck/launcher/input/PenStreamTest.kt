@@ -278,6 +278,20 @@ class PenStreamTest {
         assertFalse(PenStream.isPenKeyboard(null, keyboard, external = true, alphabetic = false))
     }
 
+    @Test fun aTouchscreenCountsAsAPenDeviceOnlyWhereAndroidSetsTheStylusBitForPens() {
+        val screen = InputDevice.SOURCE_TOUCHSCREEN or InputDevice.SOURCE_STYLUS
+        assertEquals(0x5002, screen)
+        assertFalse(PenStream.isPenDevice(screen, sdk = 33))
+        assertTrue(PenStream.isPenDevice(screen, sdk = 34))
+        for (sdk in listOf(26, 33, 34)) {
+            assertTrue(PenStream.isPenDevice(InputDevice.SOURCE_MOUSE or InputDevice.SOURCE_STYLUS, sdk))
+            assertTrue(PenStream.isPenDevice(InputDevice.SOURCE_BLUETOOTH_STYLUS, sdk))
+            assertTrue(PenStream.isPenDevice(InputDevice.SOURCE_STYLUS, sdk))
+            assertFalse(PenStream.isPenDevice(InputDevice.SOURCE_TOUCHSCREEN, sdk))
+            assertFalse(PenStream.isPenDevice(InputDevice.SOURCE_MOUSE, sdk))
+        }
+    }
+
     @Config(sdk = [34])
     @Test fun sessionStartAnnouncesAStylusDeviceFromItsMotionRanges() {
         val pen = InputDevice.SOURCE_TOUCHSCREEN or InputDevice.SOURCE_STYLUS

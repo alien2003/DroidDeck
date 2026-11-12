@@ -28,4 +28,8 @@ object PenRouter {
 
     fun wantsTablet(route: Route, mode: String, session: String): Boolean =
         route == Route.PEN && mode == SessionPrefs.PEN_AUTO && session == SessionService.MODE_DESKTOP
+
+    fun autoIsTablet(session: String, glasses: Boolean, programLock: Boolean, compositorRoute: Int): Boolean =
+        PenCursorPolicy.tablet(wantsTablet(decide(false, SessionPrefs.PEN_AUTO, glasses, programLock), SessionPrefs.PEN_AUTO, session),
+            compositorRoute)
 }
