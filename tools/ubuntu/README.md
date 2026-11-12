@@ -4,10 +4,11 @@ DroidDeck's Linux runtime: Ubuntu 26.04 LTS for arm64, with Kubuntu's Plasma des
 SteamOS's desktop mode (Valve's Vapor theme, the Steam Deck wallpaper, "Return to Gaming Mode" and
 Steam on the desktop). The app installs it into `files/linuxfs` and runs it under its patched proot.
 
-- `build-debs.sh` (run in an `ubuntu:26.04` container on an arm64 runner) rebuilds two Ubuntu source
+- `build-debs.sh` (run in an `ubuntu:26.04` container on an arm64 runner) rebuilds three Ubuntu source
   packages: Mesa with `-Dfreedreno-kmds=msm,kgsl`, so Turnip and freedreno reach Android's
-  `/dev/kgsl-3d0`, and KWin with `patches/kwin` (nested desktop scale, an explicit render node,
-  scroll source/discrete forwarding, tablet input). Both get a `+droiddeck` version. `patches/mesa`
+  `/dev/kgsl-3d0`, KWin with `patches/kwin` (nested desktop scale, an explicit render node,
+  scroll source/discrete forwarding, tablet input), and Xwayland with `patches/xwayland`. All get a
+  `+droiddeck` version. `patches/mesa`
   adds KGSL UBWC 5/6 (backported from upstream Mesa) and the KGSL device numbers for WSI (from
   [Droid-Deck/Drivers](https://github.com/Droid-Deck/Drivers)). It also carries Icenowy Zheng's upstream
   Zink fix that keeps the Imagination depth/stencil swizzle off colour views (Mesa d55418dae7).
@@ -20,6 +21,9 @@ Steam on the desktop). The app installs it into `files/linuxfs` and runs it unde
   a side button reaches apps at once, a pen in the top-left corner keeps its window, the tip release
   goes to the window that got the press, and a pen that moves onto a title bar or the empty desktop
   leaves the window it was over.
+- `patches/xwayland` are Olivier Fourdan's two upstream fixes from Xwayland 24.1.11 (03228e00 and
+  0ca92fb4) for Ubuntu's 24.1.10: without them an X11 window under the pen gets no pen events and no
+  cursor unless the mouse pointer is over it too.
 - The runtime's built-in Vulkan driver is DroidDeck's DD-Turnip Linux build (`DD_TURNIP_URL` and
   `DD_TURNIP_SHA256` in `base.env`): Ubuntu's Turnip is diverted to `libvulkan_freedreno.so.distrib`
   because it lacks the Adreno 8xx fixes. Zink, EGL and llvmpipe stay Ubuntu's.
