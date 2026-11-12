@@ -72,6 +72,9 @@ class TabletV2Test(unittest.TestCase):
     def test_the_eraser_is_its_own_tool_and_switching_leaves_the_pen_first(self):
         self.check_case('eraser')
 
+    def test_a_tool_switch_in_proximity_releases_the_old_tools_buttons_and_enters_the_new_tool_with_its_own_serial(self):
+        self.check_case('switch')
+
     def test_set_cursor_needs_the_current_proximity_serial_of_the_focused_client_and_accepts_null(self):
         self.check_case('cursor')
 

@@ -154,6 +154,9 @@ class PenEmulationTest(unittest.TestCase):
     def test_gamescope_gets_the_pointer_even_with_a_tablet_and_only_buttons_under_its_lock(self):
         self.check_case('gamescope', self.routing_binary)
 
+    def test_a_tool_switch_keeps_proximity_and_the_pointer_and_announces_a_tool_first_seen_mid_stroke(self):
+        self.check_case('tool', self.routing_binary)
+
     def test_compositor_wires_the_tablet_into_surface_teardown_start_up_and_the_drain(self):
         source = SOURCE.read_text()
         teardown = function(source, 'static void surface_resource_destroy(struct wl_resource *r) {')

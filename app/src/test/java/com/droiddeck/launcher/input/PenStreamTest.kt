@@ -14,6 +14,7 @@ import com.droiddeck.launcher.input.PenStream.Companion.PEN_RIGHT
 import com.droiddeck.launcher.input.PenStream.Companion.PEN_TABLET
 import com.droiddeck.launcher.input.PenStream.Companion.PEN_TILT
 import com.droiddeck.launcher.input.PenStream.Companion.PEN_TIP
+import com.droiddeck.launcher.session.SessionPrefs
 import java.time.Duration
 import org.junit.Assert.*
 import org.junit.Test
@@ -139,13 +140,131 @@ class PenStreamTest {
         assertEquals(listOf((PEN_IN or PEN_TIP) to 10, PEN_CANCEL to 10), states())
     }
 
-    @Test fun switchingToTheEraserLeavesWithThePenAndEntersWithTheEraser() {
+    @Test fun switchingToTheEraserKeepsProximityAndOnlyChangesTheTool() {
         send(MotionEvent.ACTION_HOVER_ENTER, Sample(10, 100f))
         send(MotionEvent.ACTION_HOVER_MOVE, Sample(20, 120f), tool = MotionEvent.TOOL_TYPE_ERASER)
         send(MotionEvent.ACTION_DOWN, Sample(30, 120f, pressure = 0.5f), tool = MotionEvent.TOOL_TYPE_ERASER)
         send(MotionEvent.ACTION_HOVER_MOVE, Sample(40, 120f))
-        assertEquals(listOf(PEN_IN to 10, 0 to 10, (PEN_IN or PEN_ERASER) to 20, (PEN_IN or PEN_ERASER or PEN_TIP) to 30,
-            PEN_ERASER to 30, PEN_IN to 40), states())
+        idle()
+        assertEquals(listOf(PEN_IN to 10, (PEN_IN or PEN_ERASER) to 20, (PEN_IN or PEN_ERASER or PEN_TIP) to 30, PEN_IN to 40), states())
+        assertTrue(stream.inProximity)
+    }
+
+    @Test fun aHoverExitFollowedByTheOtherToolWithinTheGraceIsASwitchNotALeave() {
+        send(MotionEvent.ACTION_HOVER_ENTER, Sample(10, 100f))
+        send(MotionEvent.ACTION_HOVER_EXIT, Sample(20, 100f))
+        send(MotionEvent.ACTION_HOVER_ENTER, Sample(20 + PenStream.EXIT_GRACE_MS, 110f), tool = MotionEvent.TOOL_TYPE_ERASER)
+        grace()
+        assertEquals(listOf(PEN_IN to 10, (PEN_IN or PEN_ERASER) to 50), states())
+        records.clear()
+        send(MotionEvent.ACTION_HOVER_EXIT, Sample(60, 110f), tool = MotionEvent.TOOL_TYPE_ERASER)
+        send(MotionEvent.ACTION_HOVER_ENTER, Sample(61 + PenStream.EXIT_GRACE_MS, 110f))
+        send(MotionEvent.ACTION_HOVER_EXIT, Sample(100, 110f))
+        send(MotionEvent.ACTION_HOVER_ENTER, Sample(105, 110f))
+        assertEquals(listOf(PEN_ERASER to 60, PEN_IN to 91, 0 to 100, PEN_IN to 105), states())
+    }
+
+    @Test fun theSideButtonSettingMapsThePrimaryButtonAndTheSecondaryGetsTheOtherClick() {
+        val cases = mapOf(SessionPrefs.PEN_BUTTON_RIGHT to (PEN_RIGHT to PEN_MIDDLE), SessionPrefs.PEN_BUTTON_MIDDLE to (PEN_MIDDLE to PEN_RIGHT),
+            SessionPrefs.PEN_BUTTON_ERASER to (0 to PEN_RIGHT), SessionPrefs.PEN_BUTTON_OFF to (0 to PEN_RIGHT))
+        for ((setting, expected) in cases) {
+            assertEquals(setting, 0, PenStream.buttonFlags(primary = false, secondary = false, sideButton = setting))
+            assertEquals(setting, expected.first, PenStream.buttonFlags(primary = true, secondary = false, sideButton = setting))
+            assertEquals(setting, expected.second, PenStream.buttonFlags(primary = false, secondary = true, sideButton = setting))
+            assertEquals(setting, expected.first or expected.second, PenStream.buttonFlags(primary = true, secondary = true, sideButton = setting))
+        }
+        stream.sideButton = SessionPrefs.PEN_BUTTON_MIDDLE
+        send(MotionEvent.ACTION_HOVER_ENTER, Sample(10, 100f), buttons = MotionEvent.BUTTON_STYLUS_PRIMARY)
+        send(MotionEvent.ACTION_HOVER_MOVE, Sample(20, 100f), buttons = MotionEvent.BUTTON_STYLUS_SECONDARY)
+        assertEquals(listOf(PEN_IN or PEN_MIDDLE, PEN_IN or PEN_RIGHT), records.map { it.flags })
+    }
+
+    @Test fun aBluetoothPenKeyFollowsTheSideButtonSetting() {
+        stream.sideButton = SessionPrefs.PEN_BUTTON_MIDDLE
+        send(MotionEvent.ACTION_HOVER_ENTER, Sample(10, 100f))
+        stream.onKey(key(KeyEvent.ACTION_DOWN, 15))
+        stream.onKey(key(KeyEvent.ACTION_UP, 16))
+        stream.cancel()
+        stream.sideButton = SessionPrefs.PEN_BUTTON_ERASER
+        send(MotionEvent.ACTION_HOVER_ENTER, Sample(20, 100f))
+        stream.onKey(key(KeyEvent.ACTION_DOWN, 25))
+        stream.onKey(key(KeyEvent.ACTION_UP, 26))
+        stream.cancel()
+        assertEquals(listOf(PEN_IN to 10, (PEN_IN or PEN_MIDDLE) to 15, PEN_IN to 16, PEN_CANCEL to 16,
+            PEN_IN to 20, (PEN_IN or PEN_ERASER) to 25, PEN_IN to 26, PEN_CANCEL to 26), states())
+        records.clear()
+        stream.sideButton = SessionPrefs.PEN_BUTTON_OFF
+        send(MotionEvent.ACTION_HOVER_ENTER, Sample(30, 100f))
+        val down = key(KeyEvent.ACTION_DOWN, 35)
+        assertTrue(stream.onKey(down))
+        assertTrue(stream.holdsKey(key(KeyEvent.ACTION_UP, 36)))
+        assertTrue(stream.onKey(key(KeyEvent.ACTION_UP, 36)))
+        assertEquals(listOf(PEN_IN to 30), states())
+    }
+
+    @Test fun eraserWhileHeldSwitchesAtOnceWhileHoveringWithoutLeaving() {
+        stream.sideButton = SessionPrefs.PEN_BUTTON_ERASER
+        send(MotionEvent.ACTION_HOVER_ENTER, Sample(10, 100f))
+        send(MotionEvent.ACTION_BUTTON_PRESS, Sample(20, 100f), buttons = MotionEvent.BUTTON_STYLUS_PRIMARY)
+        send(MotionEvent.ACTION_HOVER_MOVE, Sample(30, 110f), buttons = MotionEvent.BUTTON_STYLUS_PRIMARY or MotionEvent.BUTTON_STYLUS_SECONDARY)
+        send(MotionEvent.ACTION_BUTTON_RELEASE, Sample(40, 110f), buttons = MotionEvent.BUTTON_STYLUS_SECONDARY)
+        send(MotionEvent.ACTION_HOVER_MOVE, Sample(50, 110f))
+        idle()
+        assertEquals(listOf(PEN_IN to 10, (PEN_IN or PEN_ERASER) to 20, (PEN_IN or PEN_ERASER or PEN_RIGHT) to 30,
+            (PEN_IN or PEN_RIGHT) to 40, PEN_IN to 50), states())
+        assertTrue(stream.inProximity)
+    }
+
+    @Test fun eraserWhileHeldWaitsDuringContactUntilTheTipLifts() {
+        stream.sideButton = SessionPrefs.PEN_BUTTON_ERASER
+        val held = MotionEvent.BUTTON_STYLUS_PRIMARY
+        send(MotionEvent.ACTION_HOVER_ENTER, Sample(10, 100f))
+        send(MotionEvent.ACTION_DOWN, Sample(20, 100f, pressure = 0.5f))
+        send(MotionEvent.ACTION_BUTTON_PRESS, Sample(30, 100f, pressure = 0.5f), buttons = held)
+        send(MotionEvent.ACTION_MOVE, Sample(40, 110f, pressure = 0.5f), buttons = held)
+        send(MotionEvent.ACTION_UP, Sample(50, 110f), buttons = held)
+        send(MotionEvent.ACTION_HOVER_ENTER, Sample(50, 110f), buttons = held)
+        send(MotionEvent.ACTION_DOWN, Sample(60, 110f, pressure = 0.5f), buttons = held)
+        send(MotionEvent.ACTION_BUTTON_RELEASE, Sample(70, 110f, pressure = 0.5f))
+        send(MotionEvent.ACTION_MOVE, Sample(80, 120f, pressure = 0.5f))
+        send(MotionEvent.ACTION_UP, Sample(90, 120f))
+        send(MotionEvent.ACTION_HOVER_ENTER, Sample(90, 120f))
+        idle()
+        val tip = PEN_IN or PEN_TIP
+        val eraser = PEN_IN or PEN_ERASER
+        assertEquals(listOf(PEN_IN to 10, tip to 20, tip to 30, tip to 40, PEN_IN to 50, eraser to 50,
+            (eraser or PEN_TIP) to 60, (eraser or PEN_TIP) to 70, (eraser or PEN_TIP) to 80, eraser to 90, PEN_IN to 90), states())
+    }
+
+    @Test fun aPressThatArrivesWithTheDownStartsTheStrokeAsTheEraser() {
+        stream.sideButton = SessionPrefs.PEN_BUTTON_ERASER
+        send(MotionEvent.ACTION_HOVER_ENTER, Sample(10, 100f))
+        send(MotionEvent.ACTION_DOWN, Sample(20, 100f, pressure = 0.5f), buttons = MotionEvent.BUTTON_STYLUS_PRIMARY)
+        send(MotionEvent.ACTION_BUTTON_PRESS, Sample(20, 100f, pressure = 0.5f), buttons = MotionEvent.BUTTON_STYLUS_PRIMARY)
+        stream.cancel()
+        send(MotionEvent.ACTION_DOWN, Sample(30, 100f, pressure = 0.5f), buttons = MotionEvent.BUTTON_STYLUS_PRIMARY)
+        val erasing = PEN_IN or PEN_ERASER or PEN_TIP
+        assertEquals(listOf(PEN_IN to 10, erasing to 20, erasing to 20, (PEN_CANCEL or PEN_ERASER) to 20, erasing to 30), states())
+    }
+
+    @Test fun theHardwareEraserAndTheHeldButtonKeepTheEraserUntilBothEnd() {
+        stream.sideButton = SessionPrefs.PEN_BUTTON_ERASER
+        val eraser = MotionEvent.TOOL_TYPE_ERASER
+        send(MotionEvent.ACTION_HOVER_ENTER, Sample(10, 100f), tool = eraser)
+        send(MotionEvent.ACTION_BUTTON_PRESS, Sample(20, 100f), tool = eraser, buttons = MotionEvent.BUTTON_STYLUS_PRIMARY)
+        send(MotionEvent.ACTION_HOVER_MOVE, Sample(30, 100f), buttons = MotionEvent.BUTTON_STYLUS_PRIMARY)
+        send(MotionEvent.ACTION_BUTTON_RELEASE, Sample(40, 100f))
+        assertEquals(listOf((PEN_IN or PEN_ERASER) to 10, (PEN_IN or PEN_ERASER) to 20, (PEN_IN or PEN_ERASER) to 30, PEN_IN to 40), states())
+    }
+
+    @Test fun aCancelClearsTheLatchAndTheNextProximityStartsWithThePen() {
+        stream.sideButton = SessionPrefs.PEN_BUTTON_ERASER
+        send(MotionEvent.ACTION_DOWN, Sample(10, 100f, pressure = 0.5f), buttons = MotionEvent.BUTTON_STYLUS_PRIMARY)
+        send(MotionEvent.ACTION_BUTTON_RELEASE, Sample(20, 100f, pressure = 0.5f))
+        stream.cancel()
+        send(MotionEvent.ACTION_HOVER_ENTER, Sample(30, 100f))
+        val erasing = PEN_IN or PEN_ERASER or PEN_TIP
+        assertEquals(listOf(erasing to 10, erasing to 20, (PEN_CANCEL or PEN_ERASER) to 20, PEN_IN to 30), states())
     }
 
     @Test fun barrelButtonsFollowTheButtonState() {
@@ -179,7 +298,66 @@ class PenStreamTest {
         send(MotionEvent.ACTION_HOVER_ENTER, Sample(10, 100f))
         stream.onKey(key(KeyEvent.ACTION_DOWN, 15))
         send(MotionEvent.ACTION_HOVER_EXIT, Sample(20, 100f))
+        assertTrue(stream.onKey(key(KeyEvent.ACTION_UP, 25)))
         grace()
+        send(MotionEvent.ACTION_HOVER_ENTER, Sample(30, 100f))
+        assertEquals(listOf(PEN_IN to 10, (PEN_IN or PEN_RIGHT) to 15, 0 to 20, PEN_IN to 30), states())
+    }
+
+    @Test fun eraserWhileHeldComesBackWithThePenWhileTheKeyStaysHeld() {
+        stream.sideButton = SessionPrefs.PEN_BUTTON_ERASER
+        send(MotionEvent.ACTION_HOVER_ENTER, Sample(10, 100f))
+        stream.onKey(key(KeyEvent.ACTION_DOWN, 15))
+        send(MotionEvent.ACTION_HOVER_EXIT, Sample(20, 100f))
+        grace()
+        stream.onKey(key(KeyEvent.ACTION_DOWN, 500, repeat = 1))
+        stream.onKey(key(KeyEvent.ACTION_DOWN, 550, repeat = 2))
+        send(MotionEvent.ACTION_HOVER_ENTER, Sample(600, 100f))
+        send(MotionEvent.ACTION_DOWN, Sample(610, 100f, pressure = 0.5f))
+        send(MotionEvent.ACTION_UP, Sample(620, 100f))
+        send(MotionEvent.ACTION_HOVER_ENTER, Sample(620, 100f))
+        stream.onKey(key(KeyEvent.ACTION_UP, 630))
+        val eraser = PEN_IN or PEN_ERASER
+        assertEquals(listOf(PEN_IN to 10, eraser to 15, PEN_ERASER to 20, eraser to 600, (eraser or PEN_TIP) to 610,
+            eraser to 620, eraser to 620, PEN_IN to 630), states())
+    }
+
+    @Test fun eraserWhileHeldReleasedWhileThePenIsAwayComesBackAsThePen() {
+        stream.sideButton = SessionPrefs.PEN_BUTTON_ERASER
+        send(MotionEvent.ACTION_HOVER_ENTER, Sample(10, 100f))
+        stream.onKey(key(KeyEvent.ACTION_DOWN, 15))
+        send(MotionEvent.ACTION_HOVER_EXIT, Sample(20, 100f))
+        grace()
+        assertTrue(stream.holdsKey(key(KeyEvent.ACTION_UP, 40)))
+        assertTrue(stream.onKey(key(KeyEvent.ACTION_UP, 40)))
+        assertFalse(stream.holdsKey(key(KeyEvent.ACTION_UP, 41)))
+        send(MotionEvent.ACTION_HOVER_ENTER, Sample(50, 100f))
+        assertEquals(listOf(PEN_IN to 10, (PEN_IN or PEN_ERASER) to 15, PEN_ERASER to 20, PEN_IN to 50), states())
+    }
+
+    @Test fun onlyALifecycleCancelForgetsAHeldKeyAndARepeatBringsItBack() {
+        stream.sideButton = SessionPrefs.PEN_BUTTON_ERASER
+        send(MotionEvent.ACTION_HOVER_ENTER, Sample(10, 100f))
+        stream.onKey(key(KeyEvent.ACTION_DOWN, 15))
+        stream.cancel()
+        send(MotionEvent.ACTION_HOVER_ENTER, Sample(20, 100f))
+        stream.cancel(releaseKey = true)
+        send(MotionEvent.ACTION_HOVER_ENTER, Sample(30, 100f))
+        assertFalse(stream.holdsKey(key(KeyEvent.ACTION_UP, 35)))
+        stream.onKey(key(KeyEvent.ACTION_DOWN, 40, repeat = 1))
+        stream.onKey(key(KeyEvent.ACTION_UP, 50))
+        val eraser = PEN_IN or PEN_ERASER
+        assertEquals(listOf(PEN_IN to 10, eraser to 15, (PEN_CANCEL or PEN_ERASER) to 15, eraser to 20,
+            (PEN_CANCEL or PEN_ERASER) to 20, PEN_IN to 30, eraser to 40, PEN_IN to 50), states())
+    }
+
+    @Test fun removingTheBluetoothPenWhileThePenIsAwayForgetsItsKeyWithoutARecord() {
+        send(MotionEvent.ACTION_HOVER_ENTER, Sample(10, 100f))
+        stream.onKey(key(KeyEvent.ACTION_DOWN, 15))
+        send(MotionEvent.ACTION_HOVER_EXIT, Sample(20, 100f))
+        grace()
+        stream.deviceRemoved(10)
+        assertFalse(stream.holdsKey(key(KeyEvent.ACTION_UP, 25)))
         send(MotionEvent.ACTION_HOVER_ENTER, Sample(30, 100f))
         assertEquals(listOf(PEN_IN to 10, (PEN_IN or PEN_RIGHT) to 15, 0 to 20, PEN_IN to 30), states())
     }

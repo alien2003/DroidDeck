@@ -600,7 +600,7 @@ static struct active_touch g_touch_points[MAX_TOUCH_POINTS];
 #define PEN_TILT (1 << 7)
 #define PEN_BIT(button) (1 << ((button) - BTN_LEFT))
 enum pen_route { PEN_ROUTE_NONE, PEN_ROUTE_POINTER, PEN_ROUTE_TABLET };
-struct pen_state { int in; int buttons; double x, y; int route, stroke; struct surface *target, *grab; };
+struct pen_state { int in, tool, buttons; double x, y; int route, stroke; struct surface *target, *grab; };
 static struct pen_state g_pen;
 static struct { int seen, route; double x, y; } g_pen_report;
 static atomic_int g_pen_caps;
@@ -3639,11 +3639,12 @@ static void deliver_pen(const struct input_msg *m) {
     const int tool = m->p1 & PEN_ERASER ? BTN_TOOL_RUBBER : BTN_TOOL_PEN;
     g_pen.in = 1;
     input_output_to_scene(m->p2 / 256.0, m->p3 / 256.0, &g_pen.x, &g_pen.y);
+    if ((m->p1 & PEN_TABLET) && (!g_pen.stroke || tool != g_pen.tool)) {
+        droiddeck_tablet_set_capabilities(atomic_load(&g_pen_caps));
+        droiddeck_tablet_ensure_tool(tool);
+    }
+    g_pen.tool = tool;
     if (!g_pen.stroke) {
-        if (m->p1 & PEN_TABLET) {
-            droiddeck_tablet_set_capabilities(atomic_load(&g_pen_caps));
-            droiddeck_tablet_ensure_tool(tool);
-        }
         struct surface *target = pen_target_at(g_pen.x, g_pen.y);
         struct wl_client *client = target ? wl_resource_get_client(target->resource) : NULL;
         int route = client && (m->p1 & PEN_TABLET) && droiddeck_tablet_client_has_tool(client, tool) &&

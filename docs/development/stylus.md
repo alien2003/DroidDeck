@@ -166,11 +166,15 @@ a line for each.
 | Pressure | `penPressure` | Soft, Normal, Firm | Normal | pens that never reach full pressure in normal strokes; apps without their own curve |
 
 - **Palm rejection** is described below.
-- **Side button.** Right click sends `BTN_STYLUS2` to tablet clients (GTK, Qt, Xwayland and Krita read it as the
-  right button) and `BTN_RIGHT` as a pointer. Middle click sends `BTN_STYLUS` / `BTN_MIDDLE`. A second barrel
-  button, where a pen has one, sends the other of the two. "Eraser while held" switches the tool to the eraser:
-  while hovering, the pen leaves proximity and the eraser enters; during contact the switch waits until the tip
-  lifts. The raw mapping (primary = `BTN_STYLUS`, read as middle) is one choice away.
+- **Side button.** It applies to the pen's first barrel button and to a Bluetooth pen key. Right click sends
+  `BTN_STYLUS2` to tablet clients (GTK, Qt, Xwayland and Krita read it as the right button) and `BTN_RIGHT` as a
+  pointer. Middle click sends `BTN_STYLUS` / `BTN_MIDDLE`. A second barrel button, where a pen has one, sends the
+  other click: middle when the side button is Right click, right otherwise. "Eraser while held" switches the tool to
+  the eraser: while hovering, at once (on the tablet route the pen leaves proximity and the eraser enters); during
+  contact the switch waits until the tip lifts, and a press that comes with the tip's `DOWN` starts the stroke as
+  the eraser. Off sends nothing, and a Bluetooth pen key is still consumed. The raw mapping (primary =
+  `BTN_STYLUS`, read as middle) is one choice away. The mapping is done in Kotlin; the compositor renders the right
+  and middle bits it gets.
 - **Eraser end.** A real eraser is a separate tablet-v2 tool. As a pointer, eraser contact is a right click, as in
   Moonlight and GameNative; hover never holds a button.
 - **Pressure.** Soft, Normal and Firm are cubic Bézier curves from (0,0) to (1,1), the representation KWin and
@@ -222,9 +226,9 @@ direct touches.
 | `HOVER_ENTER`, `HOVER_EXIT` | in proximity | `proximity_in`, `proximity_out` | proximity | in/out | motion only |
 | `DOWN`, `UP` | tip | `down`, `up` | tip | button 1 | `BTN_LEFT` |
 | tool type `ERASER` | eraser | tool `eraser` (0x141) | eraser | `xwayland-tablet eraser` | `BTN_RIGHT` |
-| `BUTTON_STYLUS_PRIMARY` | button 1 | `BTN_STYLUS2` (Right click) or `BTN_STYLUS` | button | 3 or 2 | `BTN_RIGHT` or `BTN_MIDDLE` |
-| `BUTTON_STYLUS_SECONDARY` | button 2 | the other of the two | button | | the other |
-| Bluetooth pen key (`KEYCODE_F21` on OPPO) | button 1 while in proximity | as primary | | | as primary |
+| `BUTTON_STYLUS_PRIMARY` | right or middle, as Side button says; eraser for Eraser while held | `BTN_STYLUS2` (Right click) or `BTN_STYLUS` | button | 3 or 2 | `BTN_RIGHT` or `BTN_MIDDLE` |
+| `BUTTON_STYLUS_SECONDARY` | the other of right and middle | the other of the two | button | | the other |
+| Bluetooth pen key (`KEYCODE_F21` on OPPO) | as primary, while in proximity | as primary | | | as primary |
 | event time, historical times | ms per sample | `frame(time)` per sample | event time | | event time |
 
 - **Tilt.** Android cooks the raw `ABS_TILT_X/Y` into θ and φ (`orientation = atan2(−sin tx, sin ty)`,
@@ -263,11 +267,18 @@ direct touches.
   to a pen stroke.
 - **State.** `OUT → HOVER → CONTACT` per tool, tracked at the activity because the dispatcher and view groups add
   their own hover exits. A `HOVER_EXIT` followed by `DOWN` with the same event time is not a proximity change. `UP`
-  with `FLAG_CANCELED` or `ACTION_CANCEL` lifts the tip without a click. A pen/eraser switch leaves proximity with
-  one tool and enters with the other. Button presses are the difference between consecutive `buttonState`s.
+  with `FLAG_CANCELED` or `ACTION_CANCEL` lifts the tip without a click. A pen/eraser switch, from the tool type
+  or from Eraser while held, is not the pen leaving: the pen stays in proximity and its next record carries the
+  other tool, so the switch does not move the pointer, bring back the cursor overlay or disarm palm rejection. A
+  `HOVER_EXIT` followed within 30 ms by a hover of the other tool is such a switch. During contact the presented
+  tool is latched until the tip lifts, as Windows Pen States require for eraser buttons. Button presses are the
+  difference between consecutive `buttonState`s.
 - **Bluetooth pen buttons.** A key event is a pen button when it comes from an external device whose only source is
   keyboard and whose name contains "pen" or "stylus", while a pen is in proximity. It is consumed and folded into
-  the button state; any other key stays a key.
+  the button state; any other key stays a key. A key held while the pen goes away comes back only as repeats, so
+  the folded key's down and up are still followed then: the out record carries no button, and the pen comes back
+  with the key held (as the eraser, for Eraser while held). Removing the key's device forgets it, and so do pause,
+  focus loss and pointer-capture loss, where its up may go elsewhere; a repeat while the pen is near counts it again.
 - **Cancel points.** Everything that cancels touches today also ends the pen: mode changes in `readPrefs()`,
   touch-route changes, configuration changes (rotation, folding), surface resize and destruction, PiP, pause, focus
   loss, device removal, pointer-capture loss. Ending the pen lifts the tip, releases buttons and leaves proximity.
@@ -297,7 +308,10 @@ direct touches.
   its generated header, so it builds on a PC against libwayland for the harness. The generated code comes from the
   stable `tablet-v2.xml` with wayland-scanner 1.26.0 in `private-code` mode, like the other protocols.
 - **Routing.** `deliver_pen` picks the target in the pointer's order (constraint surface, desktop surface, implicit
-  grab, topmost toplevel) and freezes target and route while the tip or a button is down. A client named
+  grab, topmost toplevel) and freezes target and route while the tip or a button is down. A record whose tool
+  differs from the last one keeps proximity: on the tablet route `wl_tablet.c` releases the old tool's buttons and
+  sends its `proximity_out` in one frame, then the new tool's `proximity_in` with the full state in the next; a
+  tool first used while a button is held is announced then. A client named
   `gamescope` always gets the pointer, even when SDL2 inside it bound tablet-v2: SDL2 turns tablet events into mouse
   events anyway, and under a game's pointer lock gamescope would turn the pen's absolute hover motion into camera
   motion.
@@ -309,13 +323,13 @@ direct touches.
 - **Tablet route and the pointer.** While the pen is near, the tablet route does not move the host pointer:
   tablet focus is independent of the pointer in the protocol and in KWin, and every host user of the pointer
   position assumes it is the client's `wl_pointer` position. The compositor keeps the pen position separately.
-  When the pen leaves, the compositor moves the pointer to where the pen left, through the normal pointer motion
-  path (not under a pointer lock). This matches a desktop graphics tablet, where the pen moves the one cursor; on
-  the device, the cursor otherwise came back where the trackpad had left it. `PenCursorPolicy` hides the Android
-  cursor overlay while a pen is near on the tablet route (KWin draws the tool cursor). When the pen leaves, it
-  restores the overlay's visibility as it was or as other input left it meanwhile, at the pen's last position.
-  On the pointer route the overlay follows the pen as before. A sample that changes nothing for a client sends that
-  client no frame.
+  When the pen leaves (a tool switch is not leaving), the compositor moves the pointer to where the pen left,
+  through the normal pointer motion path (not under a pointer lock). This matches a desktop graphics tablet, where
+  the pen moves the one cursor; on the device, the cursor otherwise came back where the trackpad had left it.
+  `PenCursorPolicy` hides the Android cursor overlay while a pen is near on the tablet route (KWin draws the tool
+  cursor). When the pen leaves, it restores the overlay's visibility as it was or as other input left it meanwhile,
+  at the pen's last position. On the pointer route the overlay follows the pen as before. A sample that changes
+  nothing for a client sends that client no frame.
 - **Lifecycle.** Surface destruction calls `droiddeck_tablet_surface_gone`, which sends `proximity_out` while the
   surface still exists. Tablet cleanup runs in resource destroy handlers, because libwayland runs a client's
   destroy listener before destroying its resources.

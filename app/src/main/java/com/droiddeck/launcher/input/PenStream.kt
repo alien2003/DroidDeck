@@ -8,6 +8,7 @@ import android.os.SystemClock
 import android.view.InputDevice
 import android.view.KeyEvent
 import android.view.MotionEvent
+import com.droiddeck.launcher.session.SessionPrefs
 import java.util.Locale
 
 class PenStream(private val sink: Sink) {
@@ -24,9 +25,10 @@ class PenStream(private val sink: Sink) {
     private var proximity = false
     private var contact = false
     private var eraser = false
+    private var toolEraser = false
     private var tablet = false
-    private var buttons = 0
-    private var keyRight = false
+    private var barrel = 0
+    private var keyDown = false
     private var keyDevice = Int.MIN_VALUE
     private var keyCode = 0
     private var exitPending = false
@@ -42,6 +44,8 @@ class PenStream(private val sink: Sink) {
     private var tilted = false
     private var time = 0L
 
+    var sideButton = SessionPrefs.PEN_BUTTON_RIGHT
+
     val inProximity: Boolean get() = proximity
 
     fun onMotion(event: MotionEvent, pointer: Int, area: RectF, width: Int, height: Int, wantsTablet: Boolean): Boolean {
@@ -52,7 +56,7 @@ class PenStream(private val sink: Sink) {
         expire(time)
         when (action) {
             MotionEvent.ACTION_HOVER_ENTER, MotionEvent.ACTION_HOVER_MOVE -> {
-                continueAt(time)
+                continueAt(time, switchesTool(event, pointer))
                 contact = false
                 enter(event, pointer, wantsTablet)
                 samples(event, pointer, area, width, height)
@@ -66,17 +70,18 @@ class PenStream(private val sink: Sink) {
                 continueAt(time)
                 if (!proximity) return true
                 tablet = wantsTablet
-                buttons = buttonFlags(event.buttonState)
+                barrel = event.buttonState
+                present()
                 samples(event, pointer, area, width, height)
             }
             MotionEvent.ACTION_DOWN, MotionEvent.ACTION_POINTER_DOWN -> if (own) {
-                continueAt(time)
+                continueAt(time, switchesTool(event, pointer))
                 enter(event, pointer, wantsTablet)
                 contact = true
                 samples(event, pointer, area, width, height)
             } else if (contact) samples(event, pointer, area, width, height)
             MotionEvent.ACTION_MOVE -> if (contact) {
-                buttons = buttonFlags(event.buttonState)
+                barrel = event.buttonState
                 samples(event, pointer, area, width, height)
             }
             MotionEvent.ACTION_UP, MotionEvent.ACTION_POINTER_UP -> if (!own) {
@@ -84,7 +89,7 @@ class PenStream(private val sink: Sink) {
             } else if (contact) {
                 if (event.flags and MotionEvent.FLAG_CANCELED != 0) cancel()
                 else {
-                    buttons = buttonFlags(event.buttonState)
+                    barrel = event.buttonState
                     samples(event, pointer, area, width, height, lift = true)
                     pendExit(time)
                 }
@@ -97,30 +102,36 @@ class PenStream(private val sink: Sink) {
 
     fun onKey(event: KeyEvent): Boolean {
         expire(event.eventTime)
-        if (!proximity || event.repeatCount > 0) return true
-        if (exitPending) {
-            leave()
+        val down = event.action == KeyEvent.ACTION_DOWN
+        val repeat = event.repeatCount > 0
+        if (exitPending && !repeat) leave()
+        // A key held while the pen is away comes back only as repeats, so its state outlives proximity.
+        if (!proximity || exitPending) {
+            if (!repeat && event.deviceId == keyDevice && event.keyCode == keyCode) keyDown = down
             return true
         }
-        val down = event.action == KeyEvent.ACTION_DOWN
-        if (down == keyRight) return true
-        keyRight = down
+        if (down == keyDown) return true
+        val before = state()
+        keyDown = down
         if (down) {
             keyDevice = event.deviceId
             keyCode = event.keyCode
         }
+        present()
+        if (state() == before) return true
         time = event.eventTime
         emit(state() or tiltFlag())
         return true
     }
 
-    fun cancel() {
+    fun cancel(releaseKey: Boolean = false) {
+        if (releaseKey) keyDown = false
         if (!proximity) return
         emit(PEN_CANCEL or (if (eraser) PEN_ERASER else 0) or (if (tablet) PEN_TABLET else 0))
         reset()
     }
 
-    fun holdsKey(event: KeyEvent): Boolean = keyRight && event.deviceId == keyDevice && event.keyCode == keyCode
+    fun holdsKey(event: KeyEvent): Boolean = keyDown && event.deviceId == keyDevice && event.keyCode == keyCode
 
     fun announce(device: InputDevice) {
         if (device.supportsSource(InputDevice.SOURCE_STYLUS) && device.motionRanges.isNotEmpty())
@@ -129,27 +140,39 @@ class PenStream(private val sink: Sink) {
 
     fun deviceRemoved(deviceId: Int) {
         if (deviceId == this.deviceId) cancel()
-        else if (keyRight && deviceId == keyDevice) {
-            keyRight = false
-            emit(state() or tiltFlag())
-        }
+        if (!keyDown || deviceId != keyDevice) return
+        val before = state()
+        keyDown = false
+        if (!proximity) return
+        present()
+        if (state() != before) emit(state() or tiltFlag())
     }
 
     private fun enter(event: MotionEvent, pointer: Int, wantsTablet: Boolean) {
-        val eraser = event.getToolType(pointer) == MotionEvent.TOOL_TYPE_ERASER
-        if (proximity && eraser != this.eraser) leave()
-        this.eraser = eraser
+        toolEraser = event.getToolType(pointer) == MotionEvent.TOOL_TYPE_ERASER
         tablet = wantsTablet
-        buttons = buttonFlags(event.buttonState)
-        if (proximity) return
-        proximity = true
-        deviceId = event.deviceId
-        readDevice(event)
+        barrel = event.buttonState
+        if (!proximity) {
+            proximity = true
+            deviceId = event.deviceId
+            readDevice(event)
+        }
+        present()
     }
 
-    private fun continueAt(time: Long) {
+    // Windows Pen States: an eraser switch during contact waits until the tip lifts.
+    private fun present() {
+        if (!contact) eraser = toolEraser || (sideButton == SessionPrefs.PEN_BUTTON_ERASER && primaryHeld())
+    }
+
+    private fun primaryHeld(): Boolean = keyDown || barrel and MotionEvent.BUTTON_STYLUS_PRIMARY != 0
+
+    private fun switchesTool(event: MotionEvent, pointer: Int): Boolean =
+        exitPending && (event.getToolType(pointer) == MotionEvent.TOOL_TYPE_ERASER) != toolEraser
+
+    private fun continueAt(time: Long, switchingTool: Boolean = false) {
         if (!exitPending) return
-        if (time != exitTime) { leave(); return }
+        if (time != exitTime && !(switchingTool && time - exitTime <= EXIT_GRACE_MS)) { leave(); return }
         exitPending = false
         handler.removeCallbacks(exitLater)
     }
@@ -197,8 +220,9 @@ class PenStream(private val sink: Sink) {
         proximity = false
         contact = false
         exitPending = false
-        buttons = 0
-        keyRight = false
+        eraser = false
+        toolEraser = false
+        barrel = 0
         tilted = false
     }
 
@@ -231,8 +255,9 @@ class PenStream(private val sink: Sink) {
     }
 
     private fun state(): Int =
-        PEN_IN or (if (contact) PEN_TIP else 0) or (if (eraser) PEN_ERASER else 0) or buttons or
-            (if (keyRight) PEN_RIGHT else 0) or (if (tablet) PEN_TABLET else 0)
+        PEN_IN or (if (contact) PEN_TIP else 0) or (if (eraser) PEN_ERASER else 0) or
+            buttonFlags(primaryHeld(), barrel and MotionEvent.BUTTON_STYLUS_SECONDARY != 0, sideButton) or
+            (if (tablet) PEN_TABLET else 0)
 
     private fun tiltFlag(): Int = if (tilted) PEN_TILT else 0
 
@@ -309,8 +334,14 @@ class PenStream(private val sink: Sink) {
             return "pen" in lower || "stylus" in lower
         }
 
-        private fun buttonFlags(state: Int): Int =
-            (if (state and MotionEvent.BUTTON_STYLUS_PRIMARY != 0) PEN_RIGHT else 0) or
-                (if (state and MotionEvent.BUTTON_STYLUS_SECONDARY != 0) PEN_MIDDLE else 0)
+        fun buttonFlags(primary: Boolean, secondary: Boolean, sideButton: String): Int {
+            val first = when (sideButton) {
+                SessionPrefs.PEN_BUTTON_RIGHT -> PEN_RIGHT
+                SessionPrefs.PEN_BUTTON_MIDDLE -> PEN_MIDDLE
+                else -> 0
+            }
+            val second = if (sideButton == SessionPrefs.PEN_BUTTON_RIGHT) PEN_MIDDLE else PEN_RIGHT
+            return (if (primary) first else 0) or (if (secondary) second else 0)
+        }
     }
 }

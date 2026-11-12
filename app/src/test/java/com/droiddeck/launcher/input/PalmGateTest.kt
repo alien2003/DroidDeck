@@ -50,6 +50,16 @@ class PalmGateTest {
         assertEquals(listOf(1_000L), engages)
     }
 
+    @Test fun aToolSwitchAcrossAHoverExitKeepsTheGateArmedAndCancelsNothingAgain() {
+        fingers = 1
+        gate.pen(1_000, HOVER)
+        gate.leave(1_050)
+        assertTrue(gate.armed(1_051))
+        gate.pen(1_060, HOVER)
+        assertTrue(gate.armed(1_060 + PalmGate.GRACE_MS))
+        assertEquals(listOf(1_000L), engages)
+    }
+
     @Test fun penArrivalCancelsOnlyOnTheFirstEngageAndLogsWhatItCancelled() {
         fingers = 2
         gate.pen(1_000, HOVER)

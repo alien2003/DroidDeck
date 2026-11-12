@@ -2004,6 +2004,7 @@ class SessionActivity : ComponentActivity(), SurfaceHolder.Callback {
         if (penSettings != nextPen) cancelPen()
         if (penSettings.palm != nextPen.palm) Log.i(TAG, "palm rejection ${penSettings.palm} -> ${nextPen.palm}")
         penSettings = nextPen
+        penStream.sideButton = nextPen.button
         palmGate.enabled = nextPen.palm != SessionPrefs.PEN_PALM_OFF
         fingersScroll = nextPen.palm == SessionPrefs.PEN_PALM_SCROLL && nextPen.mode != SessionPrefs.PEN_TOUCH
         if (!penSeen && (SessionPrefs.penSeen(this) || PenStream.stylusConnected())) notePenSeen()
@@ -4715,6 +4716,7 @@ class SessionActivity : ComponentActivity(), SurfaceHolder.Callback {
 
     private fun releaseHeldGuestInput() {
         mouseBackInput.cancel()
+        penStream.cancel(releaseKey = true)
         cancelPen()
         heldButtons.release(1 or 2 or 8 or 16)
         guestKeysDown.toList().forEach { sendGuestKey(it, false) }
@@ -4988,6 +4990,7 @@ class SessionActivity : ComponentActivity(), SurfaceHolder.Callback {
         if (::touchpad.isInitialized) touchpad.cancel()
         if (::directTouchHold.isInitialized) directTouchHold.cancel()
         if (::twoFingerGestures.isInitialized) twoFingerGestures.cancel()
+        penStream.cancel(releaseKey = true)
         cancelPen()
         uiHandler.removeCallbacks(clearRecognizedGesture)
         uiHandler.removeCallbacks(cursorResync)

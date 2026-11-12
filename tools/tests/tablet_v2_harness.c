@@ -553,6 +553,40 @@ static void eraser_and_pen(void) {
     expect(a, "up out:eraser frame=3");
 }
 
+static void tool_switch_in_proximity(void) {
+    droiddeck_tablet_set_capabilities(CAPS_PT);
+    droiddeck_tablet_ensure_tool(PEN);
+    droiddeck_tablet_ensure_tool(ERASER);
+    struct client *a = tablet_client(2);
+    struct wl_surface *cursor;
+    struct wl_resource *s = make_surface(a, NULL);
+    make_surface(a, &cursor);
+    expect(a, TABLET_V2 " " PEN_PT " " ERASER_PT);
+    struct tool_proxy *pen = tool_of(a, PEN, 0), *eraser = tool_of(a, ERASER, 0);
+    struct droiddeck_pen p = hover(PEN, 1, 2, 1);
+    p.buttons = DROIDDECK_PEN_RIGHT;
+    frame(s, p);
+    expect(a, "in:pen motion=1.00,2.00 pressure=0 tilt=0.00,0.00 button=0x14c,1 frame=1");
+    p.tool = ERASER; p.time_ms = 2;
+    frame(s, p);
+    expect(a, "button=0x14c,0 out:pen frame=2 in:eraser motion=1.00,2.00 pressure=0 tilt=0.00,0.00 button=0x14c,1 frame=2");
+    assert(!pen->in_surface && eraser->in_surface && eraser->serial > pen->serial);
+    zwp_tablet_tool_v2_set_cursor(eraser->tool, pen->serial, cursor, 1, 1);
+    zwp_tablet_tool_v2_set_cursor(pen->tool, eraser->serial, cursor, 1, 1);
+    pump();
+    assert(cursor_calls == 0);
+    zwp_tablet_tool_v2_set_cursor(eraser->tool, eraser->serial, cursor, 1, 1);
+    pump();
+    assert(cursor_calls == 1);
+    p.tool = PEN; p.buttons = 0; p.x = 3; p.time_ms = 3;
+    frame(s, p);
+    expect(a, "button=0x14c,0 out:eraser frame=3 in:pen motion=3.00,2.00 pressure=0 tilt=0.00,0.00 frame=3");
+    droiddeck_tablet_out(4);
+    pump();
+    expect(a, "out:pen frame=4");
+    assert(!pen->in_surface && !eraser->in_surface);
+}
+
 static void set_cursor(void) {
     droiddeck_tablet_set_capabilities(CAPS_PT);
     droiddeck_tablet_ensure_tool(PEN);
@@ -825,7 +859,7 @@ int main(int argc, char **argv) {
         {"grab", implicit_grab}, {"focus", focus_change}, {"eraser", eraser_and_pen}, {"cursor", set_cursor},
         {"surface", surface_destroyed_while_down}, {"disconnect", disconnect_mid_stroke}, {"late", late_bind},
         {"bindings", two_bindings}, {"toolgone", tool_destroyed_in_proximity}, {"rebind", rebind_in_proximity},
-        {"repeat", repeated_sample},
+        {"repeat", repeated_sample}, {"switch", tool_switch_in_proximity},
     };
     assert(argc == 2);
     server = wl_display_create();
