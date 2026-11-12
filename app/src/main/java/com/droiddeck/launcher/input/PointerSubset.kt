@@ -16,7 +16,9 @@ internal fun MotionEvent.pointerSubset(pointerIdBits: Int): MotionEvent? {
         } else MotionEvent.ACTION_MOVE
         MotionEvent.ACTION_UP -> if (splitIndex >= 0) MotionEvent.ACTION_UP else MotionEvent.ACTION_MOVE
         MotionEvent.ACTION_POINTER_UP -> if (splitIndex >= 0) {
-            if (indices.size == 1) MotionEvent.ACTION_UP
+            if (indices.size == 1) {
+                if (flags and MotionEvent.FLAG_CANCELED != 0) MotionEvent.ACTION_CANCEL else MotionEvent.ACTION_UP
+            }
             else MotionEvent.ACTION_POINTER_UP or (splitIndex shl MotionEvent.ACTION_POINTER_INDEX_SHIFT)
         } else MotionEvent.ACTION_MOVE
         else -> action

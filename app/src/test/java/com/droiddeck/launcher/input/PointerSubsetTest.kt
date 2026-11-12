@@ -54,4 +54,26 @@ class PointerSubsetTest {
             event.recycle()
         }
     }
+
+    @Test fun aCancelledLastPointerBecomesActionCancelWithItsHistory() {
+        val properties = Array(2) { MotionEvent.PointerProperties().apply { id = it; toolType = MotionEvent.TOOL_TYPE_FINGER } }
+        fun coords(step: Int) = Array(2) { MotionEvent.PointerCoords().apply { x = 100f * it + step; y = 50f } }
+        fun up(flags: Int) = MotionEvent.obtain(5, 10, MotionEvent.ACTION_POINTER_UP or (1 shl MotionEvent.ACTION_POINTER_INDEX_SHIFT),
+            2, properties, coords(1), 0, 0, 1f, 1f, 3, 0, InputDevice.SOURCE_TOUCHSCREEN, flags).apply { addBatch(14, coords(2), 0) }
+        val canceled = up(MotionEvent.FLAG_CANCELED)
+        val lifted = up(0)
+        val splits = listOf(canceled.pointerSubset(1 shl 1)!!, lifted.pointerSubset(1 shl 1)!!, canceled.pointerSubset(0b11)!!)
+        try {
+            assertEquals(MotionEvent.ACTION_CANCEL, splits[0].action)
+            assertEquals(1, splits[0].historySize)
+            assertEquals(102f, splits[0].x, 0f)
+            assertEquals(MotionEvent.ACTION_UP, splits[1].action)
+            assertEquals(MotionEvent.ACTION_POINTER_UP or (1 shl MotionEvent.ACTION_POINTER_INDEX_SHIFT), splits[2].action)
+            assertEquals(MotionEvent.FLAG_CANCELED, splits[2].flags and MotionEvent.FLAG_CANCELED)
+        } finally {
+            splits.forEach { it.recycle() }
+            canceled.recycle()
+            lifted.recycle()
+        }
+    }
 }

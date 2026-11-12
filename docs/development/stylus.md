@@ -196,8 +196,11 @@ direct touches.
   taps do nothing, so a hand on the screen can never click.
 - **Off**: fingers are never filtered.
 - **Always, whatever the setting**: `ACTION_CANCEL`, `UP` with `FLAG_CANCELED` and `POINTER_UP` with
-  `FLAG_CANCELED` are Android's own palm decisions and cancel the stream without a click. `pointerSubset`, which
-  splits events for on-screen controls, keeps cancel and history.
+  `FLAG_CANCELED` are Android's own palm decisions and cancel the finger stream without a click; the rest of that
+  stream is dropped, because `wl_touch` cannot cancel one touch point. On-screen controls release only the
+  cancelled pointer, without its action, so a grip palm does not let go of a stick. `pointerSubset`, which splits
+  events for on-screen controls, keeps cancel and history: a cancelled `POINTER_UP` that is the only pointer left
+  becomes `ACTION_CANCEL`, as in Android's own split.
 - **A hover that stops reporting** for 2 s counts as gone; the pen state machine sends proximity-out with the
   same rule. Lifecycle cancels force the pen out.
 - Pen and mouse pointers are never filtered. Without a pen there is no change, and the gate does not allocate.

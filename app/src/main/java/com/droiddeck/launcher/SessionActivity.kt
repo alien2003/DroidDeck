@@ -4068,6 +4068,7 @@ class SessionActivity : ComponentActivity(), SurfaceHolder.Callback {
     private var lockedSwipeX = 0f
     private var lockedSwipeY = 0f
     private var dismissTouch = false
+    private var fingersCanceled = false
     private var sessionTouchDown = false
 
     override fun onTouchEvent(event: MotionEvent): Boolean {
@@ -4078,6 +4079,7 @@ class SessionActivity : ComponentActivity(), SurfaceHolder.Callback {
             MotionEvent.ACTION_DOWN -> {
                 sessionTouchDown = true
                 dismissTouch = false
+                fingersCanceled = false
             }
             MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> sessionTouchDown = false
         }
@@ -4093,6 +4095,22 @@ class SessionActivity : ComponentActivity(), SurfaceHolder.Callback {
             return true
         }
         if (penRouted != null) return onPenTouch(event, pen, penRouted)
+        if (fingersCanceled) {
+            if (event.actionMasked == MotionEvent.ACTION_UP || event.actionMasked == MotionEvent.ACTION_CANCEL) fingersCanceled = false
+            return true
+        }
+        if (event.flags and MotionEvent.FLAG_CANCELED != 0 &&
+            (event.actionMasked == MotionEvent.ACTION_UP || event.actionMasked == MotionEvent.ACTION_POINTER_UP)) {
+            // Android's palm decision; wl_touch has no per-point cancel, so the whole finger stream ends.
+            val cancel = MotionEvent.obtain(event).apply { action = MotionEvent.ACTION_CANCEL }
+            try { routeFingers(cancel) } finally { cancel.recycle() }
+            fingersCanceled = event.actionMasked == MotionEvent.ACTION_POINTER_UP
+            return true
+        }
+        return routeFingers(event)
+    }
+
+    private fun routeFingers(event: MotionEvent): Boolean {
         val uiBlocking = uiBlocksTouch()
         if (event.actionMasked == MotionEvent.ACTION_DOWN && !uiBlocking && routedTouchMode != SessionPrefs.TOUCH_GESTURES) {
             scrollTouchGesture = scrollTouchMode()
