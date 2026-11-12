@@ -1,8 +1,19 @@
+import contextlib
+import io
 import json
+import os
+from pathlib import Path
+import shutil
+import socket
+import subprocess
+import sys
+import tempfile
 import unittest
 import unittest.mock
 
-from test_droiddeckctl import FakeAdbTest, ctl
+from test_droiddeckctl import DUMPSYS_DISPLAY, FakeAdbTest, ctl, ended_state, scenario, state
+
+SCENARIO = Path(__file__).resolve().parents[1] / "scenarios" / "pen-desktop.json"
 
 
 def parse(*argv):
@@ -391,6 +402,262 @@ class PenUinputTest(FakeAdbTest):
         self.assertEqual({"display": 3, "rotation": 3, "size": [2400, 1080], "active": True}, ctl.input_viewport(newest))
         undated = "Viewport INTERNAL: displayId=0, orientation=2, logicalFrame=[0, 0, 720, 1280], deviceSize=[720, 1280]"
         self.assertEqual({"display": 0, "rotation": 2, "size": [720, 1280], "active": True}, ctl.input_viewport(undated))
+
+
+def wev_line(obj, interface, event, args=""):
+    """A line as wev prints it."""
+    return "[%10u:%16s] %s%s\n" % (obj, interface, event, ": " + args if args else "")
+
+
+def tool(obj, event, args=""):
+    return wev_line(obj, "zwp_tablet_tool_v2", event, args)
+
+
+WEV_TABLET = "".join([
+    wev_line(3, "xdg_surface", "configure", "serial: 1"),
+    wev_line(12, "zwp_tablet_seat_v2", "tablet_added", "13"),
+    wev_line(13, "zwp_tablet_v2", "name", "DroidDeck Pen"),
+    wev_line(12, "zwp_tablet_seat_v2", "tool_added", "14"),
+    tool(14, "type", "320 (pen)"), tool(14, "capability", "1 (tilt)"), tool(14, "done"),
+    tool(14, "proximity_in", "serial: 31; tablet: 13; surface: 3"), tool(14, "motion", "x, y: 320.000000, 240.000000"),
+    tool(14, "down", "serial: 32"), tool(14, "pressure", "13107 (0.200)"), tool(14, "tilt", "x, y: 30.000000, -15.000000"),
+    tool(14, "frame", "time: 1008"), tool(14, "pressure", "58981 (0.900)"), tool(14, "up"), tool(14, "proximity_out"),
+    wev_line(12, "zwp_tablet_seat_v2", "tool_added", "15"), tool(15, "type", "321 (eraser)"),
+    tool(15, "proximity_in", "serial: 40; tablet: 13; surface: 3"), tool(15, "down", "serial: 41"),
+    tool(15, "pressure", "39321 (0.600)"), tool(15, "up"), tool(15, "proximity_out"),
+    tool(14, "proximity_in", "serial: 50; tablet: 13; surface: 3"),
+    tool(14, "button", "serial: 51;  button: 332 (stylus2), state: 1 (pressed)"),
+    tool(14, "button", "serial: 52;  button: 332 (stylus2), state: 0 (released)"), tool(14, "proximity_out"),
+])
+
+# KWin announces a new tool to every client, so a type line alone does not mean the eraser came near wev.
+WEV_POINTER = "".join([
+    wev_line(3, "xdg_surface", "configure", "serial: 1"),
+    wev_line(12, "zwp_tablet_seat_v2", "tool_added", "15"), tool(15, "type", "321 (eraser)"),
+    wev_line(10, "wl_pointer", "enter", "serial: 5; surface: 3, x, y: 320.000000, 240.000000"),
+    wev_line(10, "wl_pointer", "button", "serial: 6; time: 7; button: 273 (right), state: 1 (pressed)"),
+])
+
+XI2_DEVICES = ("WARNING: running xinput against an Xwayland server. See the xinput man page for details.\n"
+               "⎡ Virtual core pointer                    \tid=2\t[master pointer  (3)]\n"
+               "⎜   ↳ xwayland-pointer:10                     \tid=6\t[slave  pointer  (2)]\n"
+               "⎜   ↳ xwayland-tablet stylus:10               \tid=10\t[slave  pointer  (2)]\n"
+               "⎣ Virtual core keyboard                   \tid=3\t[master keyboard (2)]\n")
+
+
+def xi2_event(number, name, source, detail=0, valuators=()):
+    """An event as `xinput test-xi2` prints it, through the master pointer."""
+    return (f"EVENT type {number} ({name})\n    device: 2 ({source})\n    time: 64624418\n    detail: {detail}\n"
+            "    flags: \n    root: 400.00/318.00\n    event: 100.00/100.00\n    buttons:\n"
+            "    modifiers: locked 0 latched 0 base 0 effective: 0\n    group: locked 0 latched 0 base 0 effective: 0\n"
+            "    valuators:\n" + "".join(f"        {i}: {v:.2f}\n" for i, v in enumerate(valuators)) +
+            "    windows: root 0x22e event 0x400001 child 0x0\n")
+
+
+XI2_RAW = ("EVENT type 17 (RawMotion)\n    device: 2 (10)\n    time: 1\n    detail: 0\n    flags: \n    valuators:\n"
+           "          2: 60000.00 (60000.00)\n"
+           "EVENT type 15 (RawButtonPress)\n    device: 2 (10)\n    time: 2\n    detail: 1\n    flags: \n    valuators:\n")
+
+# The eraser joined after xinput listed the devices, so only its classes tell that it is a tablet.
+XI2_ERASER_CLASSES = ("EVENT type 1 (DeviceChanged)\n    device: 2 (11)\n    time: 642037409\n    reason: SlaveSwitch\n"
+                      "\tReporting 1 classes:\n\t\tClass originated from: 11. Type: XIValuatorClass\n"
+                      "\t\tDetail for Valuator 2:\n\t\t  Label: Abs Pressure\n\t\t  Range: 0.000000 - 65535.000000\n")
+
+XI2_MOUSE_SCROLL = xi2_event(6, "Motion", 6, valuators=(10, 20, 15))
+
+XI2_TABLET = XI2_DEVICES + "".join([
+    XI2_MOUSE_SCROLL,
+    xi2_event(6, "Motion", 10, valuators=(131072, 138936, 0, 30, -10, 0)),
+    xi2_event(4, "ButtonPress", 10, detail=1),
+    xi2_event(6, "Motion", 10, valuators=(131072, 138936, 32767, 30, -10, 0)),
+    XI2_RAW, XI2_ERASER_CLASSES,
+    xi2_event(4, "ButtonPress", 11, detail=1),
+    xi2_event(4, "ButtonPress", 10, detail=3),
+])
+
+# What Xwayland 24.1.10 delivered before its fix: raw events only, and the mouse's scroll valuator is not pressure.
+XI2_RAW_ONLY = XI2_DEVICES + XI2_RAW + XI2_MOUSE_SCROLL
+
+XWAYLAND = "4242 /usr/bin/Xwayland :1 -auth /run/user/1000/xauth_abc -listenfd 51 -displayfd 49 -wm 53 -rootless"
+
+
+def guest_answer(text=""):
+    return {"ok": True, "exitCode": 0, "timedOut": False, "seconds": 0.1,
+            "stdout": {"text": text, "truncated": False}, "stderr": {"text": "", "truncated": False}}
+
+
+class PenDesktopScenarioTest(FakeAdbTest):
+    def setUp(self):
+        super().setUp()
+        self.scenario = json.loads(SCENARIO.read_text())
+
+    def resolved(self, **extra):
+        return scenario.substitute(self.scenario, dict(self.scenario["vars"], **extra))
+
+    def summaries(self):
+        """Each in-guest summary program with the words the scenario asserts in its output."""
+        steps, found = self.resolved()["steps"], []
+        for index, step in enumerate(steps):
+            if isinstance(step, list) and step[:1] == ["guest"] and "python3" in step:
+                words = []
+                for check in steps[index + 1:]:
+                    if not (isinstance(check, dict) and check.get("assert") == "stdout.text"):
+                        break
+                    words.append(check["contains"])
+                found.append((step[step.index("-c") + 1], words))
+        return found
+
+    def summarise(self, code, log):
+        path = self.dir / "client.log"
+        path.write_text(log)
+        return subprocess.run([sys.executable, "-I", "-c", code, str(path)], capture_output=True, text=True,
+                              check=True).stdout
+
+    def test_every_command_parses_and_every_contact_starts_at_the_centre(self):
+        resolved = self.resolved()
+        self.assertNotIn("${", json.dumps(resolved))
+        parser = ctl.build_parser()
+        kinds = {"assert", "sleep", "screenshot", "record"}
+        checks = {"equals", "in", "contains", "not", "exists"}
+        presses = []
+        for section in ("setup", "before", "steps", "after", "teardown"):
+            for step in resolved[section]:
+                with self.subTest(section=section, step=step):
+                    if isinstance(step, dict):
+                        self.assertEqual(1, len(kinds & set(step)))
+                        self.assertTrue("assert" not in step or checks & set(step))
+                        continue
+                    try:
+                        with contextlib.redirect_stderr(io.StringIO()):
+                            args = parser.parse_args(["--serial", "fake-1", *step])
+                    except SystemExit:
+                        self.fail(f"droiddeckctl does not take {step}")
+                    if args.command == "input":
+                        request = ctl.input_request(args)
+                        self.assertEqual(("pen", "pipeline", "fraction"), (request["type"], request["via"], request["space"]))
+                        if args.pen_op == "stroke":
+                            presses.append((args.x1, args.y1))
+                        elif args.pen_op != "hover":
+                            presses.append((args.x, args.y))
+                    elif args.command == "guest":
+                        self.assertEqual("--", args.argv[0])
+                        self.assertTrue(args.argv[1:])
+        self.assertEqual(20, len(presses))
+        self.assertEqual({(0.5, 0.5)}, set(presses))
+
+    def test_the_summaries_print_the_asserted_words_only_for_tablet_input(self):
+        (wev, wayland), (xi2, x11) = self.summaries()
+        self.assertEqual(["[wayland:proximity_in]", "[wayland:pressure]", "[wayland:eraser]", "[wayland:button=stylus2]"],
+                         wayland)
+        self.assertEqual(["[x11:motion]", "[x11:pressure]", "[x11:button_press]"], x11)
+
+        counts, words = self.summarise(wev, WEV_TABLET).splitlines()
+        self.assertEqual(wayland, words.split())
+        self.assertEqual({"proximityIn": {"pen": 2, "eraser": 1}, "down": {"pen": 1, "eraser": 1},
+                          "maxPressure": {"pen": 58981, "eraser": 39321}, "maxTilt": [30.0, 15.0],
+                          "buttons": ["stylus2"], "pointerButtons": 0}, json.loads(counts))
+        middle = [s["contains"] for s in self.resolved(sideButton="stylus")["steps"]
+                  if isinstance(s, dict) and "button=" in s.get("contains", "")]
+        self.assertEqual(["[wayland:button=stylus]"], middle)
+        self.assertNotIn(middle[0], words)
+
+        counts, words = self.summarise(xi2, XI2_TABLET).splitlines()
+        self.assertEqual(x11, words.split())
+        counts = json.loads(counts)
+        self.assertEqual(({"stylus": 2}, 32767.0), (counts["motion"], counts["maxPressure"]))
+        self.assertEqual({"stylus:1": 1, "11:1": 1, "stylus:3": 1}, counts["buttonPress"])
+
+        for code, log in ((wev, WEV_POINTER), (xi2, XI2_RAW_ONLY)):
+            with self.subTest(log=log[:40]):
+                counts, words = self.summarise(code, log).splitlines()
+                self.assertEqual("", words)
+                json.loads(counts)
+
+    def start_client(self, index, client, xwayland=XWAYLAND):
+        """Run a client start step's shell script here, with a fake client, pgrep and a quick sleep."""
+        starts = [step for step in self.resolved()["steps"]
+                  if isinstance(step, list) and step[:1] == ["guest"] and "-c" in step and step[step.index("--") + 1] == "sh"]
+        script = starts[index][starts[index].index("-c") + 1]
+        fakes = self.dir / "fakes"
+        fakes.mkdir()
+        programs = {"pgrep": f"printf '%s\\n' '{xwayland}'", "sleep": f"exec {shutil.which('sleep')} 0.02", "client": client}
+        for name, body in programs.items():
+            (fakes / name).write_text("#!/bin/sh\n" + body + "\n")
+            (fakes / name).chmod(0o755)
+        runtime = tempfile.mkdtemp(prefix="dd-", dir="/tmp")
+        self.addCleanup(shutil.rmtree, runtime)
+        with socket.socket(socket.AF_UNIX) as display:
+            display.bind(os.path.join(runtime, "wayland-1"))
+        log = self.dir / "client.log"
+        env = dict(os.environ, PATH=f"{fakes}:{os.environ['PATH']}", XDG_RUNTIME_DIR=runtime, WAYLAND_DISPLAY="wayland-1",
+                   DISPLAY=":0")
+        result = subprocess.run(["sh", "-c", script, "sh", str(fakes / "client"), str(log)], env=env, capture_output=True,
+                                text=True, timeout=60)
+        return result, log.read_text() if log.exists() else ""
+
+    @unittest.skipUnless(shutil.which("setsid") and shutil.which("stdbuf"), "needs setsid and stdbuf")
+    def test_the_clients_start_detached_on_kwins_displays(self):
+        result, log = self.start_client(0, "echo '[         3:     xdg_surface] configure: serial: 1'")
+        self.assertEqual((0, ""), (result.returncode, result.stderr))
+        self.assertIn("xdg_surface", log)
+        shutil.rmtree(self.dir / "fakes")
+        result, log = self.start_client(1, 'echo "$* $DISPLAY $XAUTHORITY"; echo "⎡ Virtual core pointer"')
+        self.assertEqual((0, ""), (result.returncode, result.stderr))
+        self.assertIn("test-xi2 :1 /run/user/1000/xauth_abc", log)
+
+    @unittest.skipUnless(shutil.which("setsid") and shutil.which("stdbuf"), "needs setsid and stdbuf")
+    def test_a_client_that_does_not_start_fails_the_step_with_its_output(self):
+        result, _ = self.start_client(1, "echo 'Unable to connect to X server' >&2")
+        self.assertEqual(1, result.returncode)
+        self.assertIn("xinput test-xi2 did not start:\nUnable to connect to X server", result.stderr)
+        shutil.rmtree(self.dir / "fakes")
+        result, _ = self.start_client(1, "true", xwayland="")
+        self.assertEqual((1, "KWin runs no Xwayland\n"), (result.returncode, result.stderr))
+
+    def run_on_fake_device(self, route, guest):
+        ready = state()
+        ready["session"]["mode"] = "lxqt"
+        self.configure({"access": {"ok": True, "commands": True, "inbox": "/sdcard/agent-inbox"},
+                        "override": {"ok": True}, "state": [ready, ready, ready, ended_state()],
+                        "input": {"ok": True, "command": "input", "type": "pen", "via": "pipeline", "route": route},
+                        "guest": guest, "stop": {"ok": True, "command": "stop"}}, dumpsys_display=DUMPSYS_DISPLAY)
+        for name in ("wev", "xinput"):
+            (self.dir / name).write_bytes(b"\x7fELF")
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()), \
+                unittest.mock.patch.object(scenario.time, "sleep"):
+            code = scenario.main([str(SCENARIO), "--adb", str(self.adb), "--serial", "fake-1", "--out", str(self.dir / "runs"),
+                                  "--var", f"wev={self.dir / 'wev'}", "--var", f"xinput={self.dir / 'xinput'}"])
+        return code, json.loads(out.getvalue())
+
+    def test_a_run_draws_with_the_pen_and_checks_both_programs(self):
+        (wev, _), (xi2, _) = self.summaries()
+        code, report = self.run_on_fake_device("tablet", [
+            guest_answer(), guest_answer(), guest_answer(self.summarise(wev, WEV_TABLET)),
+            guest_answer(), guest_answer(), guest_answer(self.summarise(xi2, XI2_TABLET)), guest_answer()])
+        self.assertEqual((0, 1), (code, report["passed"]), report)
+        self.assertEqual([str(self.dir / "wev"), str(self.dir / "xinput")],
+                         [c["args"][1] for c in self.calls() if c["args"][:1] == ["push"]])
+        self.assertEqual(["wev", "xinput"], [c["request"]["name"] for c in self.calls("override")])
+        pens = [c["request"] for c in self.calls("input")]
+        self.assertEqual(22, len(pens))
+        self.assertEqual({("pen", "pipeline", "fraction")}, {(p["type"], p["via"], p["space"]) for p in pens})
+        self.assertEqual(["pen"] * 9 + ["eraser", "pen"], [p["tool"] for p in pens[:11]])
+        guests = [c["request"] for c in self.calls("guest")]
+        self.assertEqual({"WAYLAND_DISPLAY": "wayland-1"}, guests[0]["env"])
+        self.assertEqual(["/opt/droiddeck-agent/bin/wev", "/tmp/droiddeck-pen-wev.log"], guests[0]["argv"][-2:])
+        self.assertEqual(["/opt/droiddeck-agent/bin/xinput", "/tmp/droiddeck-pen-xi2.log"], guests[3]["argv"][-2:])
+        self.assertEqual(["pkill", "-x", "wev|xinput"], guests[-1]["argv"])
+        self.assertEqual(1, len(self.calls("stop")))
+        folder = Path(report["runs"][0]["folder"])
+        self.assertTrue((folder / "wayland.png").is_file() and (folder / "x11.png").is_file())
+
+    def test_a_pen_that_reaches_the_desktop_as_a_mouse_fails_the_run_and_closes_the_programs(self):
+        code, report = self.run_on_fake_device("pointer", [guest_answer()] * 2)
+        self.assertEqual(1, code)
+        self.assertIn("route is 'pointer', expected 'tablet'", report["runs"][0]["error"])
+        self.assertEqual(2, len(self.calls("input")))
+        self.assertEqual(["pkill", "-x", "wev|xinput"], self.calls("guest")[-1]["request"]["argv"])
 
 
 if __name__ == "__main__":

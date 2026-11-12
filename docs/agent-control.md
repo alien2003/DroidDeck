@@ -512,6 +512,38 @@ shows up in some fraction of launches. A game with a launcher of its own needs t
 through first, since the launcher window carries the game's app id too:
 `tools/scenarios/skyrim-launcher-focus.json` taps Skyrim's Play before checking.
 
+`tools/scenarios/pen-desktop.json` checks that `input pen` reaches desktop programs as a tablet,
+through KWin to a Wayland program and through Xwayland to an X11 one. It needs Debugging tools and
+arm64 builds of `wev` and `xinput` that run in the runtime, such as the Ubuntu runtime's own packages
+unpacked with `dpkg-deb -x`. Setup installs them with `override` and the scenario runs them from
+`/opt/droiddeck-agent/bin`, so a desktop session that was already running finds them too. An
+override applies to the next session that starts: when the scenario starts the desktop, that is the
+session it runs in. When it keeps a desktop that was already running, the programs stay installed
+after it, and that directory goes first on `PATH` for the next session you start, in any mode,
+until that session ends or `env clear all` drops them.
+
+```sh
+tools/droiddeck-scenario tools/scenarios/pen-desktop.json --var wev=./usr/bin/wev --var xinput=./usr/bin/xinput
+```
+
+It starts the desktop, or keeps a running one, and opens `wev` on KWin's display (`wayland-1`). It
+then draws a hover across the middle, eight strokes from the centre out to the edges and corners with
+rising pressure and tilt, an eraser tap and a side-button press, stops `wev` and checks its log. Then
+it does the same with `xinput test-xi2` on KWin's Xwayland, taking `DISPLAY` and `XAUTHORITY` from
+the Xwayland command line. The programs run one at a time, detached with `setsid` and writing
+line-buffered output to a file, and a short `python3` summarises each log inside the session, since
+`guest` keeps at most 256 KiB of output. The strokes, the tap and the button press all start at the
+centre of the screen, where KWin's default placement puts a new window, because a stroke goes to the
+window the pen lands in; another window over the centre gets in the way. A summary prints its counts
+as JSON and then a word for each check that held, and the scenario asserts the words:
+`[wayland:proximity_in]`, `[wayland:pressure]` (above 0), `[wayland:eraser]` and
+`[wayland:button=stylus2]`, then `[x11:motion]`, `[x11:pressure]` (the pressure valuator of a tablet
+`Motion` above 0) and `[x11:button_press]` (the tip). The Pen setting must be Auto: the first stroke
+for each program asserts that the `route` is `tablet`. Side button must be Right click, the default,
+or Middle click, with `--var sideButton=stylus`; with Eraser while held or Off the primary button
+sends no tablet button, so the button check fails. The run's folder keeps a screenshot of each
+program.
+
 ## PRoot performance experiments
 
 `proot-profile enable` queues handler profiling for the next session using the existing debugging

@@ -1,0 +1,72 @@
+{
+  "name": "pen-desktop",
+  "vars": {
+    "wev": "wev",
+    "xinput": "xinput",
+    "agentBin": "/opt/droiddeck-agent/bin",
+    "waylandDisplay": "wayland-1",
+    "wevLog": "/tmp/droiddeck-pen-wev.log",
+    "xiLog": "/tmp/droiddeck-pen-xi2.log",
+    "sideButton": "stylus2"
+  },
+  "repeat": 1,
+  "setup": [
+    ["wake"],
+    ["access"],
+    {"assert": "commands", "equals": true},
+    ["override", "wev", "${wev}"],
+    ["override", "xinput", "${xinput}"]
+  ],
+  "before": [
+    ["start", "desktop", "--wait", "--reuse", "--timeout", "240"]
+  ],
+  "steps": [
+    ["guest", "--timeout", "120", "--check", "--env", "WAYLAND_DISPLAY=${waylandDisplay}", "--", "sh", "-c", "bin=$1 log=$2; rm -f \"$log\"; i=0; until [ -S \"$XDG_RUNTIME_DIR/$WAYLAND_DISPLAY\" ]; do i=$((i + 1)); [ $i -le 60 ] || { echo \"no $WAYLAND_DISPLAY in $XDG_RUNTIME_DIR\" >&2; exit 1; }; sleep 1; done; setsid -f stdbuf -oL \"$bin\" >\"$log\" 2>&1 </dev/null; i=0; until grep -q xdg_surface \"$log\" 2>/dev/null; do i=$((i + 1)); [ $i -le 40 ] || { echo \"wev opened no window:\" >&2; tail -n 5 \"$log\" >&2; exit 1; }; sleep 0.5; done; sleep 1", "sh", "${agentBin}/wev", "${wevLog}"],
+    ["input", "pen", "hover", "0.06", "0.5", "--to", "0.94", "0.5", "--duration", "800", "--space", "fraction"],
+    ["input", "pen", "stroke", "0.5", "0.5", "0.94", "0.5", "--pressure", "0.2:0.9", "--tilt-x", "10:40", "--tilt-y", "15", "--duration", "300", "--space", "fraction"],
+    {"assert": "route", "equals": "tablet"},
+    ["input", "pen", "stroke", "0.5", "0.5", "0.06", "0.5", "--pressure", "0.2:0.9", "--tilt-x", "10:40", "--tilt-y", "15", "--duration", "300", "--space", "fraction"],
+    ["input", "pen", "stroke", "0.5", "0.5", "0.5", "0.06", "--pressure", "0.2:0.9", "--tilt-x", "10:40", "--tilt-y", "15", "--duration", "300", "--space", "fraction"],
+    ["input", "pen", "stroke", "0.5", "0.5", "0.5", "0.88", "--pressure", "0.2:0.9", "--tilt-x", "10:40", "--tilt-y", "15", "--duration", "300", "--space", "fraction"],
+    ["input", "pen", "stroke", "0.5", "0.5", "0.9", "0.1", "--pressure", "0.2:0.9", "--tilt-x", "10:40", "--tilt-y", "15", "--duration", "300", "--space", "fraction"],
+    ["input", "pen", "stroke", "0.5", "0.5", "0.1", "0.1", "--pressure", "0.2:0.9", "--tilt-x", "10:40", "--tilt-y", "15", "--duration", "300", "--space", "fraction"],
+    ["input", "pen", "stroke", "0.5", "0.5", "0.1", "0.85", "--pressure", "0.2:0.9", "--tilt-x", "10:40", "--tilt-y", "15", "--duration", "300", "--space", "fraction"],
+    ["input", "pen", "stroke", "0.5", "0.5", "0.9", "0.85", "--pressure", "0.2:0.9", "--tilt-x", "10:40", "--tilt-y", "15", "--duration", "300", "--space", "fraction"],
+    ["input", "pen", "tap", "0.5", "0.5", "--tool", "eraser", "--pressure", "0.6", "--hold", "120", "--space", "fraction"],
+    ["input", "pen", "button", "primary", "0.5", "0.5", "--hold", "200", "--space", "fraction"],
+    {"sleep": 1},
+    {"screenshot": "wayland"},
+    ["guest", "--", "pkill", "-x", "wev"],
+    ["guest", "--", "python3", "-c", "import collections, json, re, sys\ntools, near, down, pressure = {}, collections.Counter(), collections.Counter(), collections.Counter()\ntilt, buttons, pointer = [0.0, 0.0], set(), 0\nfor line in open(sys.argv[1], errors='replace'):\n    m = re.match(r'\\[ *(\\d+): *(\\w+)\\] (\\w+):? ?(.*)', line)\n    if not m:\n        continue\n    obj, iface, event, args = m.groups()\n    pointer += iface == 'wl_pointer' and event == 'button'\n    if iface != 'zwp_tablet_tool_v2':\n        continue\n    tool = tools.get(obj, obj)\n    if event == 'type':\n        tools[obj] = args.split('(')[-1].rstrip(')')\n    elif event == 'proximity_in':\n        near[tool] += 1\n    elif event == 'down':\n        down[tool] += 1\n    elif event == 'pressure':\n        pressure[tool] = max(pressure[tool], int(args.split()[0]))\n    elif event == 'tilt':\n        tilt = [max(t, abs(float(v))) for t, v in zip(tilt, re.findall(r'-?[\\d.]+', args))]\n    elif event == 'button' and 'state: 1' in args:\n        buttons.add(re.search(r'\\((\\w+)\\)', args).group(1))\nprint(json.dumps({'proximityIn': near, 'down': down, 'maxPressure': pressure, 'maxTilt': tilt,\n                  'buttons': sorted(buttons), 'pointerButtons': pointer}))\nchecks = [('proximity_in', near['pen']), ('pressure', pressure['pen']), ('eraser', near['eraser'])]\nprint(' '.join('[wayland:%s]' % c for c, n in checks + [('button=' + b, 1) for b in sorted(buttons)] if n))", "${wevLog}"],
+    {"assert": "stdout.text", "contains": "[wayland:proximity_in]"},
+    {"assert": "stdout.text", "contains": "[wayland:pressure]"},
+    {"assert": "stdout.text", "contains": "[wayland:eraser]"},
+    {"assert": "stdout.text", "contains": "[wayland:button=${sideButton}]"},
+    ["guest", "--timeout", "120", "--check", "--", "sh", "-c", "bin=$1 log=$2; rm -f \"$log\"; i=0; until x=$(pgrep -a Xwayland | grep -e ' -wm ' | head -n 1) && [ -n \"$x\" ]; do i=$((i + 1)); [ $i -le 60 ] || { echo \"KWin runs no Xwayland\" >&2; exit 1; }; sleep 1; done; unset DISPLAY XAUTHORITY; set -- $x; while [ $# -gt 0 ]; do case $1 in :[0-9]*) export DISPLAY=$1 ;; -auth) export XAUTHORITY=$2 ;; esac; shift; done; setsid -f stdbuf -oL \"$bin\" test-xi2 >\"$log\" 2>&1 </dev/null; i=0; until grep -q 'Virtual core pointer' \"$log\" 2>/dev/null; do i=$((i + 1)); [ $i -le 40 ] || { echo \"xinput test-xi2 did not start:\" >&2; tail -n 5 \"$log\" >&2; exit 1; }; sleep 0.5; done; sleep 2", "sh", "${agentBin}/xinput", "${xiLog}"],
+    ["input", "pen", "hover", "0.06", "0.5", "--to", "0.94", "0.5", "--duration", "800", "--space", "fraction"],
+    ["input", "pen", "stroke", "0.5", "0.5", "0.94", "0.5", "--pressure", "0.2:0.9", "--tilt-x", "10:40", "--tilt-y", "15", "--duration", "300", "--space", "fraction"],
+    {"assert": "route", "equals": "tablet"},
+    ["input", "pen", "stroke", "0.5", "0.5", "0.06", "0.5", "--pressure", "0.2:0.9", "--tilt-x", "10:40", "--tilt-y", "15", "--duration", "300", "--space", "fraction"],
+    ["input", "pen", "stroke", "0.5", "0.5", "0.5", "0.06", "--pressure", "0.2:0.9", "--tilt-x", "10:40", "--tilt-y", "15", "--duration", "300", "--space", "fraction"],
+    ["input", "pen", "stroke", "0.5", "0.5", "0.5", "0.88", "--pressure", "0.2:0.9", "--tilt-x", "10:40", "--tilt-y", "15", "--duration", "300", "--space", "fraction"],
+    ["input", "pen", "stroke", "0.5", "0.5", "0.9", "0.1", "--pressure", "0.2:0.9", "--tilt-x", "10:40", "--tilt-y", "15", "--duration", "300", "--space", "fraction"],
+    ["input", "pen", "stroke", "0.5", "0.5", "0.1", "0.1", "--pressure", "0.2:0.9", "--tilt-x", "10:40", "--tilt-y", "15", "--duration", "300", "--space", "fraction"],
+    ["input", "pen", "stroke", "0.5", "0.5", "0.1", "0.85", "--pressure", "0.2:0.9", "--tilt-x", "10:40", "--tilt-y", "15", "--duration", "300", "--space", "fraction"],
+    ["input", "pen", "stroke", "0.5", "0.5", "0.9", "0.85", "--pressure", "0.2:0.9", "--tilt-x", "10:40", "--tilt-y", "15", "--duration", "300", "--space", "fraction"],
+    ["input", "pen", "tap", "0.5", "0.5", "--tool", "eraser", "--pressure", "0.6", "--hold", "120", "--space", "fraction"],
+    ["input", "pen", "button", "primary", "0.5", "0.5", "--hold", "200", "--space", "fraction"],
+    {"sleep": 1},
+    {"screenshot": "x11"},
+    ["guest", "--", "pkill", "-x", "xinput"],
+    ["guest", "--", "python3", "-c", "import collections, json, re, sys\ntext = open(sys.argv[1], errors='replace').read()\ntools = {d: t for t, d in re.findall(r'xwayland-tablet (\\w+)\\S*\\s+id=(\\d+)', text)}\naxis = dict.fromkeys(tools, '2')\naxis.update(re.findall(r'originated from: (\\d+)\\. Type: XIValuatorClass\\s+Detail for Valuator (\\d+):\\s+Label: Abs Pressure', text))\nevents, motion, presses, pressure = collections.Counter(), collections.Counter(), collections.Counter(), 0.0\nfor block in text.split('EVENT type ')[1:]:\n    kind = re.match(r'\\d+ \\((\\w+)\\)', block)\n    source = re.search(r'device: \\d+ \\((\\d+)\\)', block)\n    events[kind and kind.group(1)] += 1\n    if not kind or not source or source.group(1) not in axis:\n        continue\n    device = source.group(1)\n    tool = tools.get(device, device)\n    if kind.group(1) == 'Motion':\n        motion[tool] += 1\n        values = dict(re.findall(r'^[ \\t]+(\\d+): (-?[\\d.]+)[ \\t]*$', block, re.M))\n        pressure = max(pressure, float(values.get(axis[device], 0)))\n    elif kind.group(1) == 'ButtonPress':\n        presses['%s:%s' % (tool, re.search(r'detail: (\\d+)', block).group(1))] += 1\nprint(json.dumps({'events': events, 'tablets': tools, 'motion': motion, 'buttonPress': presses, 'maxPressure': pressure}))\nchecks = [('motion', sum(motion.values())), ('pressure', pressure), ('button_press', sum(n for k, n in presses.items() if k.endswith(':1')))]\nprint(' '.join('[x11:%s]' % c for c, n in checks if n))", "${xiLog}"],
+    {"assert": "stdout.text", "contains": "[x11:motion]"},
+    {"assert": "stdout.text", "contains": "[x11:pressure]"},
+    {"assert": "stdout.text", "contains": "[x11:button_press]"}
+  ],
+  "after": [
+    ["guest", "--", "pkill", "-x", "wev|xinput"]
+  ],
+  "teardown": [
+    ["stop", "--timeout", "120"]
+  ]
+}

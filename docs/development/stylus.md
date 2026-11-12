@@ -429,8 +429,11 @@ Xwayland) would give Proton drawing programs Wintab pressure; it is left out of 
   of the screen as shown, turned into the panel's natural orientation with the rotation of the viewport
   `dumpsys input` reports, which tests Android's own mapping (hover, tilt, buttons, eraser, batching) end to
   end. It has no fingers, so palm tests use the bridge.
-- A `droiddeck-scenario` scenario draws strokes in the desktop and checks them with `wev` and `xinput test-xi2`
-  run inside the session. The compositor's `test-input` FIFO is not used: `droiddeck-desktop` removes it.
+- `tools/scenarios/pen-desktop.json` (`droiddeck-scenario`) draws in the desktop with `input pen` and checks the
+  result with `wev` on KWin's Wayland display and `xinput test-xi2` on its Xwayland, installed with `override`, run
+  inside the session one after the other and summarised there. Every contact starts at the centre, where KWin
+  places a new window, because a stroke goes to the window the pen lands in. The compositor's `test-input` FIFO is
+  not used: `droiddeck-desktop` removes it.
 
 ## Prior art
 
