@@ -119,6 +119,11 @@ class PenStream(private val sink: Sink) {
 
     fun holdsKey(event: KeyEvent): Boolean = keyRight && event.deviceId == keyDevice && event.keyCode == keyCode
 
+    fun announce(device: InputDevice) {
+        if (device.supportsSource(InputDevice.SOURCE_STYLUS) && device.motionRanges.isNotEmpty())
+            send(capabilities(device, InputDevice.SOURCE_STYLUS))
+    }
+
     fun deviceRemoved(deviceId: Int) {
         if (deviceId == this.deviceId) cancel()
         else if (keyRight && deviceId == keyDevice) {
@@ -212,9 +217,14 @@ class PenStream(private val sink: Sink) {
         val distance = device?.range(MotionEvent.AXIS_DISTANCE, event.source)
         distanceMin = distance?.min ?: 0f
         distanceMax = distance?.max ?: 0f
-        val capabilities = CAP_PRESSURE or
-            (if (device?.range(MotionEvent.AXIS_TILT, event.source) != null) CAP_TILT else 0) or
-            (if (distance != null && distance.max - distance.min > 1f) CAP_DISTANCE else 0)
+        send(device?.let { capabilities(it, event.source) } ?: CAP_PRESSURE)
+    }
+
+    private fun capabilities(device: InputDevice, source: Int): Int =
+        capabilities(device.range(MotionEvent.AXIS_TILT, source) != null,
+            device.range(MotionEvent.AXIS_DISTANCE, source)?.let { it.max - it.min })
+
+    private fun send(capabilities: Int) {
         if (capabilities or sentCapabilities == sentCapabilities) return
         sentCapabilities = sentCapabilities or capabilities
         sink.capabilities(sentCapabilities)
@@ -240,6 +250,9 @@ class PenStream(private val sink: Sink) {
         const val CAP_DISTANCE = 1 shl 2
         const val HOVER_TIMEOUT_MS = 2_000L
         const val EXIT_GRACE_MS = 30L
+
+        fun capabilities(tilt: Boolean, distanceSpan: Float?): Int =
+            CAP_PRESSURE or (if (tilt) CAP_TILT else 0) or (if (distanceSpan != null && distanceSpan > 1f) CAP_DISTANCE else 0)
 
         fun isPen(event: MotionEvent, index: Int): Boolean = when (event.getToolType(index)) {
             MotionEvent.TOOL_TYPE_STYLUS, MotionEvent.TOOL_TYPE_ERASER -> true

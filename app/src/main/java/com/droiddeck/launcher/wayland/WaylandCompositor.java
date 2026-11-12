@@ -178,6 +178,8 @@ public final class WaylandCompositor {
 
     public static native boolean nativeFocusTakesTouch();
 
+    public static native int nativePenRoute();
+
     public static native boolean nativeCursorInputPos(int[] out);
 
     public static native void nativeVsync(long frameTimeNanos);

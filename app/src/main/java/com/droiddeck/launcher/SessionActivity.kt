@@ -2251,6 +2251,7 @@ class SessionActivity : ComponentActivity(), SurfaceHolder.Callback {
         if (!SessionState.running) SessionEvents.record("compositor.started")
         if (!SessionState.running) {
             SessionEvents.transition(SessionPhase.STARTING_GUEST, "guest.starting")
+            for (id in InputDevice.getDeviceIds()) InputDevice.getDevice(id)?.let(penStream::announce)
             SessionService.start(
                 this, intent.getStringExtra(SessionService.EXTRA_MODE) ?: SessionService.MODE_STEAM,
                 intent.getStringExtra(SessionService.EXTRA_PROGRAM),

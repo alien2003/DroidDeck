@@ -273,8 +273,8 @@ direct touches.
   initialisers. Type 13 is a pen sample: flags (tool, in proximity, tip, buttons, wants tablet, cancel, tilt
   present), x and y in input space × 256, pressure, distance, tilt x and y in 1/100°, event time. Each record is a
   full state snapshot, so a lost record cannot leave a button held, and the writer keeps the newest pen record aside
-  when the pipe is full so the compositor applies it after draining. Type 14 announces the tools' capabilities. The
-  pipe is enlarged with `F_SETPIPE_SZ`, since a 360 Hz pen writes 360 records a second.
+  when the pipe is full so the compositor applies it after draining. Type 14 announces the tablet and the tools'
+  capabilities. The pipe is enlarged with `F_SETPIPE_SZ`, since a 360 Hz pen writes 360 records a second.
 - **Times.** Pen frames carry the Android event time (`CLOCK_MONOTONIC` milliseconds, the clock `now_ms()` already
   uses), so historical samples keep their spacing. The clock-pause preload shifts `CLOCK_MONOTONIC` for some guest
   processes, and open PR #2393 adds a guest clock domain to the compositor; pen times must follow whatever that PR
@@ -284,7 +284,10 @@ direct touches.
   its generated header, so it builds on a PC against libwayland for the harness. The generated code comes from the
   stable `tablet-v2.xml` with wayland-scanner 1.26.0 in `private-code` mode, like the other protocols.
 - **Routing.** `deliver_pen` picks the target in the pointer's order (constraint surface, desktop surface, implicit
-  grab, topmost toplevel) and freezes target and route while the tip or a button is down.
+  grab, topmost toplevel) and freezes target and route while the tip or a button is down. A client named
+  `gamescope` always gets the pointer, even when SDL2 inside it bound tablet-v2: SDL2 turns tablet events into mouse
+  events anyway, and under a game's pointer lock gamescope would turn the pen's absolute hover motion into camera
+  motion.
 - **Pointer emulation**, modelled on the touch `pointer_fallback`: hover is motion, the tip is `BTN_LEFT`, buttons
   map as in the table; leaving proximity, cancel and target destruction release every emulated button. Emulation
   moves the shared pointer position, resets the relative-motion origin and publishes the cursor position for the
@@ -292,7 +295,9 @@ direct touches.
   before Kotlin hears about the lock.
 - **Tablet route and the pointer.** A tablet stroke does not move the host pointer: tablet focus is independent
   of the pointer in the protocol and in KWin, and every host user of the pointer position assumes it is the
-  client's `wl_pointer` position. The compositor keeps the pen position separately.
+  client's `wl_pointer` position. The compositor keeps the pen position separately. The Android cursor overlay does
+  not know the route yet: it follows the pen and snaps back to the host pointer when samples pause. Hiding it on the
+  tablet route is the pen cursor policy step, which has to land before the KWin tablet gate below reaches users.
 - **Lifecycle.** Surface destruction calls `droiddeck_tablet_surface_gone`, which sends `proximity_out` while the
   surface still exists. Tablet cleanup runs in resource destroy handlers, because libwayland runs a client's
   destroy listener before destroying its resources.
@@ -313,7 +318,8 @@ change is carried twice: `0005-forward-nested-tablet-input.patch` for Ubuntu and
   scale applies to the pen as to the pointer and touch. On 6.6, KWin stores the position of a proximity-out and of
   a tip-up as the tool's position, so those events carry the last real position.
 - **Gate.** The host tablet is bound only with `DROIDDECK_NESTED_TABLET=1`, which `droiddeck-desktop` exports next
-  to `DROIDDECK_NESTED_SCALE`. Without it nothing in the patch runs.
+  to `DROIDDECK_NESTED_SCALE`. Without it nothing in the patch runs. `droiddeck-desktop` exports it only once the
+  Android cursor overlay hides on the tablet route.
 - **Cursor.** The nested backend shows KWin's cursor through the host `wl_pointer`, which does not follow the pen.
   While a tool is in proximity, the output uses a software cursor (the mechanism pointer lock already uses), and the
   host tool cursor is hidden with `set_cursor(NULL)`. This repaints KWin's output as the pen hovers; if validation
@@ -334,9 +340,10 @@ change is carried twice: `0005-forward-nested-tablet-input.patch` for Ubuntu and
 
 ## gamescope
 
-gamescope 3.16.29 neither exposes nor binds tablet-v2, so Steam and programs in gamescope get pointer emulation in
-Auto and Mouse. A tablet through gamescope (a host tablet-v2 client in its Wayland backend and a `wlr_tablet_v2`
-server for its Xwayland) would give Proton drawing programs Wintab pressure; it is left out of this change.
+gamescope 3.16.29 does not expose tablet-v2. Its SDL backend (PowerVR) binds it through SDL2, but the app compositor
+never sends tablet-v2 to gamescope, so Steam and programs in gamescope get pointer emulation in Auto and Mouse. A
+tablet through gamescope (a host tablet-v2 client in its Wayland backend and a `wlr_tablet_v2` server for its
+Xwayland) would give Proton drawing programs Wintab pressure; it is left out of this change.
 
 ## Threads and races
 

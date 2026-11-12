@@ -20,6 +20,7 @@ import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.Shadows.shadowOf
 import org.robolectric.annotation.Config
+import org.robolectric.shadows.InputDeviceBuilder
 
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [28], manifest = Config.NONE)
@@ -275,6 +276,36 @@ class PenStreamTest {
         assertFalse(PenStream.isPenKeyboard("Pen Keyboard K380", keyboard, external = true, alphabetic = true))
         assertFalse(PenStream.isPenKeyboard("8BitDo Remote", keyboard, external = true, alphabetic = false))
         assertFalse(PenStream.isPenKeyboard(null, keyboard, external = true, alphabetic = false))
+    }
+
+    @Config(sdk = [34])
+    @Test fun sessionStartAnnouncesAStylusDeviceFromItsMotionRanges() {
+        val pen = InputDevice.SOURCE_TOUCHSCREEN or InputDevice.SOURCE_STYLUS
+        stream.announce(device(InputDevice.SOURCE_KEYBOARD, tilt = true))
+        stream.announce(InputDeviceBuilder.newBuilder().setId(7).setSources(pen).build())
+        assertTrue(capabilities.isEmpty())
+        stream.announce(device(pen, tilt = true, distance = 1f))
+        stream.announce(device(pen, tilt = true))
+        assertEquals(listOf(PenStream.CAP_PRESSURE or PenStream.CAP_TILT), capabilities)
+        stream.announce(device(pen, distance = 255f))
+        send(MotionEvent.ACTION_HOVER_ENTER, Sample(10, 100f))
+        assertEquals(listOf(PenStream.CAP_PRESSURE or PenStream.CAP_TILT,
+            PenStream.CAP_PRESSURE or PenStream.CAP_TILT or PenStream.CAP_DISTANCE), capabilities)
+    }
+
+    @Test fun distanceCountsOnlyWhenItsRangeHasMoreThanHoverAndTouch() {
+        assertEquals(PenStream.CAP_PRESSURE, PenStream.capabilities(tilt = false, distanceSpan = null))
+        assertEquals(PenStream.CAP_PRESSURE or PenStream.CAP_TILT, PenStream.capabilities(tilt = true, distanceSpan = 1f))
+        assertEquals(PenStream.CAP_PRESSURE or PenStream.CAP_DISTANCE, PenStream.capabilities(tilt = false, distanceSpan = 1.5f))
+    }
+
+    private fun device(sources: Int, tilt: Boolean = false, distance: Float? = null): InputDevice {
+        val builder = InputDeviceBuilder.newBuilder().setId(7).setName("pen").setSources(sources)
+            .addMotionRange(MotionEvent.AXIS_X, sources, 0f, 1000f, 0f, 0f, 0f)
+            .addMotionRange(MotionEvent.AXIS_PRESSURE, sources, 0f, 1f, 0f, 0f, 0f)
+        if (tilt) builder.addMotionRange(MotionEvent.AXIS_TILT, sources, 0f, 1.5f, 0f, 0f, 0f)
+        if (distance != null) builder.addMotionRange(MotionEvent.AXIS_DISTANCE, sources, 0f, distance, 0f, 0f, 0f)
+        return builder.build()
     }
 
     private fun states() = records.map { it.flags to it.time }
