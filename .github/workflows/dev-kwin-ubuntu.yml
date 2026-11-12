@@ -1,0 +1,68 @@
+name: Dev KWin (Ubuntu) build
+
+on:
+  push:
+    branches: [dev/kwin-ci]
+    paths:
+      - 'tools/ubuntu/patches/kwin/**'
+      - 'tools/ubuntu/patches/xwayland/**'
+      - '.github/workflows/dev-kwin-ubuntu.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  kwin:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build the patched KWin debs
+        run: |
+          mkdir -p out
+          docker run --rm -v "$PWD:/work" -w /work ubuntu:26.04 bash -c '
+            set -euo pipefail
+            export DEBIAN_FRONTEND=noninteractive DEB_BUILD_OPTIONS="nocheck noddebs parallel=$(nproc)"
+            sed -i "s/^Types: deb$/Types: deb deb-src/" /etc/apt/sources.list.d/ubuntu.sources
+            apt-get update -qq
+            apt-get install -y -qq build-essential devscripts equivs patch >/dev/null
+            cd /tmp && apt-get source -qq kwin && cd kwin-*/
+            for p in /work/tools/ubuntu/patches/kwin/*.patch; do echo "== $p"; patch -p1 --forward < "$p"; done
+            apt-get build-dep -y -qq ./ >/dev/null
+            dpkg-buildpackage -b -uc -us > /tmp/kwin.log 2>&1 || { tail -150 /tmp/kwin.log; exit 1; }
+            cp /tmp/*.deb /work/out/
+            ls -l /work/out
+          '
+      - uses: actions/upload-artifact@v4
+        with:
+          name: kwin-ubuntu-debs
+          retention-days: 7
+          path: out/*.deb
+
+  xwayland:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build the patched Xwayland deb
+        run: |
+          mkdir -p out
+          docker run --rm -v "$PWD:/work" -w /work ubuntu:26.04 bash -c '
+            set -euo pipefail
+            export DEBIAN_FRONTEND=noninteractive DEB_BUILD_OPTIONS="nocheck noddebs parallel=$(nproc)"
+            sed -i "s/^Types: deb$/Types: deb deb-src/" /etc/apt/sources.list.d/ubuntu.sources
+            apt-get update -qq
+            apt-get install -y -qq build-essential devscripts equivs patch >/dev/null
+            cd /tmp && apt-get source -qq xwayland && cd xwayland-*/
+            for p in /work/tools/ubuntu/patches/xwayland/*.patch; do echo "== $p"; patch -p1 --forward < "$p"; done
+            apt-get build-dep -y -qq ./ >/dev/null
+            dpkg-buildpackage -b -uc -us > /tmp/xwayland.log 2>&1 || { tail -150 /tmp/xwayland.log; exit 1; }
+            cp /tmp/*.deb /work/out/
+            ls -l /work/out
+          '
+      - uses: actions/upload-artifact@v4
+        with:
+          name: xwayland-ubuntu-debs
+          retention-days: 7
+          path: out/*.deb
