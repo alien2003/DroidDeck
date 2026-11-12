@@ -34,6 +34,7 @@ class SettingsResetTest {
     @Test fun settingsGoBackToTheirDefaults() {
         SessionPrefs.setTheme(app, "ocean")
         SessionPrefs.setBackDoubleTapMs(app, 100)
+        SessionPrefs.setPenMode(app, SessionPrefs.PEN_MOUSE)
         SessionPrefs.setUnfoldedControlsWithController(app, true)
         SessionPrefs.setNoXalia(app, false)
         session.edit().putInt("fpsLimit.steam", 30).commit()
@@ -58,6 +59,7 @@ class SettingsResetTest {
 
         assertEquals("graphite", SessionPrefs.theme(app))
         assertEquals(500, SessionPrefs.backDoubleTapMs(app))
+        assertEquals(SessionPrefs.PEN_AUTO, SessionPrefs.penMode(app))
         assertFalse(SessionPrefs.unfoldedControlsWithController(app))
         assertTrue(SessionPrefs.noXalia(app))
         assertFalse(session.contains("fpsLimit.steam"))
@@ -80,6 +82,16 @@ class SettingsResetTest {
         assertEquals(AppUiPrefs.DEFAULT_SCALE, AppUiPrefs.scale(app))
         assertEquals(FrameGen.Mode.OFF.engine, FrameGen.engine(app))
         assertFalse(prefs("steam_touch").contains("gyro"))
+    }
+
+    @Test fun penModeIsASettingThatKeepsOnlyKnownValues() {
+        assertTrue(SettingsReset.isSessionSetting("pen"))
+        assertEquals(SessionPrefs.PEN_AUTO, SessionPrefs.penMode(app))
+        SessionPrefs.setPenMode(app, SessionPrefs.PEN_TOUCH)
+        assertEquals(SessionPrefs.PEN_TOUCH, SessionPrefs.penMode(app))
+        session.edit().putString("pen", "tablet").commit()
+        assertEquals(SessionPrefs.PEN_AUTO, SessionPrefs.penMode(app))
+        assertThrows(IllegalArgumentException::class.java) { SessionPrefs.setPenMode(app, "tablet") }
     }
 
     @Test fun aFailedDebugOptOutDoesNotHideTheEnabledPreference() {

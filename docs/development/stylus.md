@@ -268,12 +268,13 @@ direct touches.
 
 ## App compositor
 
-- **Message.** `struct input_msg` grows from five to eleven ints so one record carries a whole sample: 44 bytes,
+- **Message.** `struct input_msg` grows from five to nine ints so one record carries a whole sample: 36 bytes,
   far below `PIPE_BUF`, so records from different threads never interleave. Existing writers keep their positional
-  initialisers. Type 13 is a pen sample: flags (tool, in proximity, tip, buttons, wants tablet, cancel), x and y in
-  input space × 256, pressure, distance, tilt x and y in 1/100°, event time. Each record is a full state snapshot,
-  so a lost record cannot leave a button held. Type 14 announces the tablet and the tools' capabilities. The pipe
-  is enlarged with `F_SETPIPE_SZ`, since a 360 Hz pen writes 360 records a second.
+  initialisers. Type 13 is a pen sample: flags (tool, in proximity, tip, buttons, wants tablet, cancel, tilt
+  present), x and y in input space × 256, pressure, distance, tilt x and y in 1/100°, event time. Each record is a
+  full state snapshot, so a lost record cannot leave a button held, and the writer keeps the newest pen record aside
+  when the pipe is full so the compositor applies it after draining. Type 14 announces the tools' capabilities. The
+  pipe is enlarged with `F_SETPIPE_SZ`, since a 360 Hz pen writes 360 records a second.
 - **Times.** Pen frames carry the Android event time (`CLOCK_MONOTONIC` milliseconds, the clock `now_ms()` already
   uses), so historical samples keep their spacing. The clock-pause preload shifts `CLOCK_MONOTONIC` for some guest
   processes, and open PR #2393 adds a guest clock domain to the compositor; pen times must follow whatever that PR

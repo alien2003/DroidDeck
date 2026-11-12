@@ -472,6 +472,19 @@ object SessionPrefs {
         prefs(context).edit().putString("touch", mode).apply()
     }
 
+    const val PEN_AUTO = "auto"
+    const val PEN_MOUSE = "mouse"
+    const val PEN_TOUCH = "touch"
+    private val PEN_MODES = setOf(PEN_AUTO, PEN_MOUSE, PEN_TOUCH)
+
+    fun penMode(context: Context): String =
+        prefs(context).getString("pen", PEN_AUTO)?.takeIf { it in PEN_MODES } ?: PEN_AUTO
+
+    fun setPenMode(context: Context, mode: String) {
+        require(mode in PEN_MODES)
+        prefs(context).edit().putString("pen", mode).apply()
+    }
+
     const val SHAPE_AUTO = "auto"
     const val SHAPE_WIDE = "16:9"
     const val SHAPE_EXACT = "exact"

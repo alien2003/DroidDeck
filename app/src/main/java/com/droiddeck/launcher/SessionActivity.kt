@@ -97,8 +97,11 @@ import com.droiddeck.launcher.input.PadState
 import com.droiddeck.launcher.input.SteamControllerBle
 import com.droiddeck.launcher.input.DirectTouchHold
 import com.droiddeck.launcher.input.GestureTouchStreamGate
+import com.droiddeck.launcher.input.PenRouter
+import com.droiddeck.launcher.input.PenStream
 import com.droiddeck.launcher.input.PointerGestures
 import com.droiddeck.launcher.input.PointerSpace
+import com.droiddeck.launcher.input.pointerSubset
 import com.droiddeck.launcher.input.SecondScreenDisplay
 import com.droiddeck.launcher.input.SecondScreenDisplays
 import com.droiddeck.launcher.input.SecondScreenMode
@@ -261,6 +264,15 @@ class SessionActivity : ComponentActivity(), SurfaceHolder.Callback {
     private var steamTouchOptions: com.droiddeck.launcher.input.SteamTouchConfig.Options? = null
     private var routedTouchMode = SessionPrefs.TOUCH_AUTO
     private var touchRoute: com.droiddeck.launcher.input.TouchRouter.Route? = null
+    private var penMode = SessionPrefs.PEN_AUTO
+    private var penRoute: PenRouter.Route? = null
+    private var penTablet = false
+    private var penDown = false
+    private val penStream = PenStream(object : PenStream.Sink {
+        override fun sample(flags: Int, x: Int, y: Int, pressure: Int, distance: Int, tiltX: Int, tiltY: Int, timeMs: Int) =
+            WaylandCompositor.nativeSendPen(flags, x, y, pressure, distance, tiltX, tiltY, timeMs)
+        override fun capabilities(capabilities: Int) = WaylandCompositor.nativeSendPenCapabilities(capabilities)
+    })
     private var keyboard: KeyboardHost? = null
     private var desktopKeyboardButton: com.droiddeck.launcher.input.DesktopKeyboardButton? = null
     private var lastUserPressMs = 0L
@@ -647,6 +659,7 @@ class SessionActivity : ComponentActivity(), SurfaceHolder.Callback {
         }
         override fun onInputDeviceRemoved(deviceId: Int) {
             physicalShortcuts.onDeviceRemoved(deviceId)
+            penStream.deviceRemoved(deviceId)
             Log.i(TAG, "input device $deviceId disconnected")
             dropMouseCursor()
             backQamInput.onDeviceRemoved(deviceId)
@@ -740,6 +753,9 @@ class SessionActivity : ComponentActivity(), SurfaceHolder.Callback {
                     uiHandler.postDelayed(::updatePointerCapture, 250)
                 }
             }
+            override fun onResolvePointerIcon(event: MotionEvent, pointerIndex: Int): android.view.PointerIcon? =
+                if (platformPointerShown == false && PenStream.isPen(event, pointerIndex)) pointerIcon
+                else super.onResolvePointerIcon(event, pointerIndex)
         }
         sessionRoot = root
         surfaceView = SurfaceView(this)
@@ -821,7 +837,7 @@ class SessionActivity : ComponentActivity(), SurfaceHolder.Callback {
         refreshGestureConfig()
         root.isMotionEventSplittingEnabled = true
         surfaceView.setOnTouchListener { _, event ->
-            if (!event.isFromSource(InputDevice.SOURCE_TOUCHSCREEN)) {
+            if (!event.isFromSource(InputDevice.SOURCE_TOUCHSCREEN) && PenStream.penIndex(event) < 0) {
                 false
             } else if (!gestureTouchStreamGate.accepts(GestureTouchStreamGate.Source.SURFACE, event)) {
                 false
@@ -1953,6 +1969,7 @@ class SessionActivity : ComponentActivity(), SurfaceHolder.Callback {
         textureLodBias = SessionPrefs.textureLodBias(this)
         val nextTouchMode = SessionPrefs.touchMode(this)
         if (touchMode != nextTouchMode) {
+            cancelPen()
             if (::touchpad.isInitialized) touchpad.cancel()
             if (::directTouchHold.isInitialized) directTouchHold.cancel()
             if (::twoFingerGestures.isInitialized) twoFingerGestures.cancel()
@@ -1966,6 +1983,9 @@ class SessionActivity : ComponentActivity(), SurfaceHolder.Callback {
             if (nextTouchMode == SessionPrefs.TOUCH_OFF || !usingTouchpad()) cursorVisible = false
         }
         touchMode = nextTouchMode
+        val nextPenMode = SessionPrefs.penMode(this)
+        if (penMode != nextPenMode) cancelPen()
+        penMode = nextPenMode
         val nextRoutedTouchMode = effectiveTouchMode()
         if (routedTouchMode != nextRoutedTouchMode) gestureTouchStreamGate.reset()
         routedTouchMode = nextRoutedTouchMode
@@ -2333,9 +2353,15 @@ class SessionActivity : ComponentActivity(), SurfaceHolder.Callback {
         if (::directTouchHold.isInitialized) directTouchHold.cancel()
         if (::twoFingerGestures.isInitialized) twoFingerGestures.cancel()
         if (::scrollTouch.isInitialized) scrollTouch.cancel()
+        cancelPen()
         scrollTouchGesture = false
         gesturePointerReady = false
         if (sessionTouchDown) dismissTouch = true
+    }
+
+    private fun cancelPen() {
+        penStream.cancel()
+        penDown = false
     }
 
     private fun panelBounds(): android.graphics.Rect = if (Build.VERSION.SDK_INT >= 30) {
@@ -2653,6 +2679,7 @@ class SessionActivity : ComponentActivity(), SurfaceHolder.Callback {
                 return super.dispatchKeyEvent(event)
             }
         }
+        if (PenStream.isPenKey(event) || penStream.holdsKey(event)) return penStream.onKey(event)
         if (appTextFocus) return super.dispatchKeyEvent(event)
         if (!pipUi) {
             if (physicalInputBindings?.onKey(event, resumed && !drawerOpen && !pcKeyboardOpen && !achievementsOpen &&
@@ -2838,6 +2865,19 @@ class SessionActivity : ComponentActivity(), SurfaceHolder.Callback {
         if (joyConVr?.onMotionEvent(event) == true) return true
         if (PadBridge.isControllerMotionEvent(event) && padMouseMode() && padMouse.onMotion(event)) return true
         if (padBridge?.onMotionEvent(event) == true) return true
+        val pen = PenStream.penIndex(event)
+        if (pen >= 0) when (routePen(event, pen)) {
+            PenRouter.Route.TOUCH -> {}
+            PenRouter.Route.PEN -> {
+                if (!appUiOwnsPointer()) return penSample(event, pen) || super.dispatchGenericMotionEvent(event)
+                if (super.dispatchGenericMotionEvent(event)) {
+                    penStream.cancel()
+                    return true
+                }
+                return !touchEditorOpen && penSample(event, pen)
+            }
+            else -> return super.dispatchGenericMotionEvent(event)
+        }
         if (event.isFromSource(android.view.InputDevice.SOURCE_MOUSE) && !drawerOpen) {
             if (appUiOwnsPointer()) {
                 if (super.dispatchGenericMotionEvent(event)) return true
@@ -2872,7 +2912,8 @@ class SessionActivity : ComponentActivity(), SurfaceHolder.Callback {
     override fun dispatchTouchEvent(event: MotionEvent): Boolean {
         if (pipUi) return true
         notePress(event)
-        if (event.actionMasked == MotionEvent.ACTION_DOWN && event.isFromSource(InputDevice.SOURCE_TOUCHSCREEN)) {
+        if (event.actionMasked == MotionEvent.ACTION_DOWN &&
+            (event.isFromSource(InputDevice.SOURCE_TOUCHSCREEN) || PenStream.penIndex(event) >= 0)) {
             drawerControllerActive = false
             gestureTouchStreamGate.reset()
         }
@@ -3011,8 +3052,7 @@ class SessionActivity : ComponentActivity(), SurfaceHolder.Callback {
         runCatching { relativeMouseRequests.execute { applyRelativeMouse() } }
     }
 
-    private fun applyRelativeMouse() {
-        val wanted = desiredRelativeMouseMode
+    private fun gamescopeRelativeMouseMode(wanted: Int): Int {
         val touchpadRoute = com.droiddeck.launcher.input.TouchRouter.decide(com.droiddeck.launcher.input.TouchRouter.Snapshot(
             uiBlocking = false,
             mode = routedTouchMode,
@@ -3020,7 +3060,12 @@ class SessionActivity : ComponentActivity(), SurfaceHolder.Callback {
             steamSession = SessionState.mode == SessionService.MODE_STEAM,
             steamDesktopUi = SessionState.steamUi == "desktop",
         )) == com.droiddeck.launcher.input.TouchRouter.Route.TOUCHPAD
-        val mode = com.droiddeck.launcher.input.TouchGestureConfig.gamescopeRelativeMouse(wanted, mouseAttached(), touchpadRoute)
+        return com.droiddeck.launcher.input.TouchGestureConfig.gamescopeRelativeMouse(wanted, mouseAttached(), touchpadRoute)
+    }
+
+    private fun applyRelativeMouse() {
+        val wanted = desiredRelativeMouseMode
+        val mode = gamescopeRelativeMouseMode(wanted)
         if (appliedRelativeMouseMode == mode) return
         val request = org.json.JSONObject()
             .put("kind", "exec")
@@ -3846,6 +3891,7 @@ class SessionActivity : ComponentActivity(), SurfaceHolder.Callback {
         }
         if (next == routedTouchMode) return
         if (::touchscreenGestures.isInitialized) touchscreenGestures.cancel()
+        cancelPen()
         gesturePointerReady = false
         if (::touchpad.isInitialized) touchpad.cancel()
         if (::directTouchHold.isInitialized) directTouchHold.cancel()
@@ -4002,7 +4048,9 @@ class SessionActivity : ComponentActivity(), SurfaceHolder.Callback {
     private var sessionTouchDown = false
 
     override fun onTouchEvent(event: MotionEvent): Boolean {
-        if (event.isFromSource(android.view.InputDevice.SOURCE_MOUSE)) return onMouse(event)
+        val pen = PenStream.penIndex(event)
+        val penRouted = if (pen >= 0) routePen(event, pen).takeIf { it != PenRouter.Route.TOUCH } else null
+        if (penRouted == null && event.isFromSource(android.view.InputDevice.SOURCE_MOUSE)) return onMouse(event)
         when (event.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
                 sessionTouchDown = true
@@ -4021,19 +4069,14 @@ class SessionActivity : ComponentActivity(), SurfaceHolder.Callback {
             if (event.actionMasked == MotionEvent.ACTION_UP || event.actionMasked == MotionEvent.ACTION_CANCEL) dismissTouch = false
             return true
         }
-        val uiBlocking = drawerOpen || achievementsOpen || gestureSettingsOpen || inputSettingsOpen || pipUi || SessionState.suspended
+        if (penRouted != null) return onPenTouch(event, pen, penRouted)
+        val uiBlocking = uiBlocksTouch()
         if (event.actionMasked == MotionEvent.ACTION_DOWN && !uiBlocking && routedTouchMode != SessionPrefs.TOUCH_GESTURES) {
             scrollTouchGesture = scrollTouchMode()
             scrollRestX = 0f
             scrollRestY = 0f
         }
-        val snapshot = com.droiddeck.launcher.input.TouchRouter.Snapshot(
-            uiBlocking = uiBlocking,
-            mode = routedTouchMode,
-            scrollLayer = scrollTouchGesture,
-            steamSession = SessionState.mode == SessionService.MODE_STEAM,
-            steamDesktopUi = SessionState.steamUi == "desktop",
-        )
+        val snapshot = fingerTouchSnapshot(uiBlocking)
         val route = com.droiddeck.launcher.input.TouchRouter.decide(snapshot)
         if (route != touchRoute) {
             Log.i(TAG, "touch route $touchRoute -> $route (mode=$routedTouchMode steamUi=${SessionState.steamUi} scrollLayer=$scrollTouchGesture)")
@@ -4061,22 +4104,95 @@ class SessionActivity : ComponentActivity(), SurfaceHolder.Callback {
                     if (threeFingerTap.active || wasActive) return true
                 }
                 if (route == com.droiddeck.launcher.input.TouchRouter.Route.TOUCHPAD) {
-                    val rect = (if (pointerLocked) drawnRect() else pointerSurfaceRect()) ?: return false
-                    if (touchpad.bounds != rect) {
-                        val fresh = touchpad.bounds.width() <= 1f
-                        touchpad.bounds = rect
-                        if (fresh) touchpad.place(rect.centerX(), rect.centerY())
-                    }
-                    if (event.actionMasked == MotionEvent.ACTION_DOWN) {
-                        touchpad.desktop = SessionState.mode == SessionService.MODE_DESKTOP
-                        placeTouchpadAtGuest(rect)
-                    }
-                    touchpad.onTouch(event)
+                    touchpadTouch(event)
                 } else {
                     dispatchDirectTouch(event)
                 }
             }
         }
+    }
+
+    private fun uiBlocksTouch(): Boolean =
+        drawerOpen || achievementsOpen || gestureSettingsOpen || inputSettingsOpen || pipUi || SessionState.suspended
+
+    private fun fingerTouchSnapshot(uiBlocking: Boolean) = com.droiddeck.launcher.input.TouchRouter.Snapshot(
+        uiBlocking = uiBlocking,
+        mode = routedTouchMode,
+        scrollLayer = scrollTouchGesture,
+        steamSession = SessionState.mode == SessionService.MODE_STEAM,
+        steamDesktopUi = SessionState.steamUi == "desktop",
+    )
+
+    private fun touchpadTouch(event: MotionEvent): Boolean {
+        val rect = (if (pointerLocked) drawnRect() else pointerSurfaceRect()) ?: return false
+        if (touchpad.bounds != rect) {
+            val fresh = touchpad.bounds.width() <= 1f
+            touchpad.bounds = rect
+            if (fresh) touchpad.place(rect.centerX(), rect.centerY())
+        }
+        if (event.actionMasked == MotionEvent.ACTION_DOWN) {
+            touchpad.desktop = SessionState.mode == SessionService.MODE_DESKTOP
+            placeTouchpadAtGuest(rect)
+        }
+        return touchpad.onTouch(event)
+    }
+
+    private fun routePen(event: MotionEvent, pen: Int): PenRouter.Route {
+        val action = event.actionMasked
+        if (action == MotionEvent.ACTION_HOVER_ENTER || action == MotionEvent.ACTION_HOVER_MOVE || action == MotionEvent.ACTION_HOVER_EXIT) penDown = false
+        val own = action == MotionEvent.ACTION_DOWN || action == MotionEvent.ACTION_UP || action == MotionEvent.ACTION_CANCEL ||
+            ((action == MotionEvent.ACTION_POINTER_DOWN || action == MotionEvent.ACTION_POINTER_UP) && event.actionIndex == pen)
+        val starts = own && (action == MotionEvent.ACTION_DOWN || action == MotionEvent.ACTION_POINTER_DOWN)
+        val route = penRoute.takeIf { penDown && !starts } ?: decidePen()
+        if (own) penDown = starts
+        return route
+    }
+
+    private fun decidePen(): PenRouter.Route {
+        val route = PenRouter.decide(uiBlocksTouch(), penMode, glassesOutputActive, programLocksPointer())
+        penTablet = PenRouter.wantsTablet(route, penMode, SessionState.mode)
+        if (route != penRoute) {
+            if (penRoute == PenRouter.Route.PEN) penStream.cancel()
+            Log.i(TAG, "pen route $penRoute -> $route (mode=$penMode)")
+            penRoute = route
+        }
+        return route
+    }
+
+    private fun onPenTouch(event: MotionEvent, pen: Int, route: PenRouter.Route): Boolean {
+        if (route == PenRouter.Route.RELATIVE && event.pointerCount > 1 &&
+            com.droiddeck.launcher.input.TouchRouter.decide(fingerTouchSnapshot(uiBlocksTouch())) ==
+            com.droiddeck.launcher.input.TouchRouter.Route.TOUCHPAD) {
+            touchpadTouch(event)
+            return true
+        }
+        if (event.pointerCount > 1) {
+            var fingers = 0
+            for (index in 0 until event.pointerCount) if (!PenStream.isPen(event, index)) fingers = fingers or (1 shl event.getPointerId(index))
+            event.pointerSubset(fingers)?.let { split -> try { onTouchEvent(split) } finally { split.recycle() } }
+        }
+        when (route) {
+            PenRouter.Route.PEN -> penSample(event, pen)
+            PenRouter.Route.RELATIVE -> {
+                val split = if (event.pointerCount == 1) MotionEvent.obtain(event) else event.pointerSubset(1 shl event.getPointerId(pen))
+                split?.let {
+                    try {
+                        if (it.actionMasked == MotionEvent.ACTION_UP && it.flags and MotionEvent.FLAG_CANCELED != 0) it.action = MotionEvent.ACTION_CANCEL
+                        touchpadTouch(it)
+                    } finally { it.recycle() }
+                }
+            }
+            else -> {}
+        }
+        return true
+    }
+
+    private fun penSample(event: MotionEvent, pen: Int): Boolean {
+        val area = pointerSurfaceRect() ?: return false
+        val view = outputView()
+        if (!penStream.onMotion(event, pen, area, view.width, view.height, penTablet)) return false
+        if (penStream.inProximity) showCursor(event.getX(pen).coerceIn(area.left, area.right), event.getY(pen).coerceIn(area.top, area.bottom), fromMouse = true)
+        return true
     }
 
     private val directTouchSink = object : DirectTouchHold.Touch {
@@ -4164,7 +4280,8 @@ class SessionActivity : ComponentActivity(), SurfaceHolder.Callback {
     }
 
     private fun isHardwareMouse(d: InputDevice?): Boolean =
-        d != null && !d.isVirtual && (d.supportsSource(InputDevice.SOURCE_MOUSE) || d.supportsSource(InputDevice.SOURCE_MOUSE_RELATIVE))
+        d != null && !d.isVirtual && !d.supportsSource(InputDevice.SOURCE_STYLUS) &&
+            (d.supportsSource(InputDevice.SOURCE_MOUSE) || d.supportsSource(InputDevice.SOURCE_MOUSE_RELATIVE))
 
     /** Android also sends the Back and Forward buttons as key events, so they are handled as keys. */
     private fun guestMouseButton(actionButton: Int): Int? = when (actionButton) {
@@ -4498,6 +4615,7 @@ class SessionActivity : ComponentActivity(), SurfaceHolder.Callback {
 
     private fun releaseHeldGuestInput() {
         mouseBackInput.cancel()
+        cancelPen()
         heldButtons.release(1 or 2 or 8 or 16)
         guestKeysDown.toList().forEach { sendGuestKey(it, false) }
         heldKeys.release(8 or 16 or 32)
@@ -4589,6 +4707,7 @@ class SessionActivity : ComponentActivity(), SurfaceHolder.Callback {
             scrollTouch.cancel()
             directTouchHold.cancel()
             twoFingerGestures.cancel()
+            cancelPen()
             guestKeysDown.toList().forEach { sendGuestKey(it, false) }
             heldKeys.clear()
             heldButtons.clear()
@@ -4769,6 +4888,7 @@ class SessionActivity : ComponentActivity(), SurfaceHolder.Callback {
         if (::touchpad.isInitialized) touchpad.cancel()
         if (::directTouchHold.isInitialized) directTouchHold.cancel()
         if (::twoFingerGestures.isInitialized) twoFingerGestures.cancel()
+        cancelPen()
         uiHandler.removeCallbacks(clearRecognizedGesture)
         uiHandler.removeCallbacks(cursorResync)
         val screenOff = screenIsOff()
@@ -5074,7 +5194,7 @@ class SessionActivity : ComponentActivity(), SurfaceHolder.Callback {
         }
         if (shown != null) {
             closeSecondScreen(reset = false)
-            val screen = com.droiddeck.launcher.ui.BottomGameScreen(this, shown, this, ::onBottomGameTouch)
+            val screen = com.droiddeck.launcher.ui.BottomGameScreen(this, shown, this, ::onBottomGameTouch, ::onBottomGameHover)
             bottomGame = screen
             surfaceW = 0
             surfaceH = 0
@@ -5126,9 +5246,23 @@ class SessionActivity : ComponentActivity(), SurfaceHolder.Callback {
         if (surfaceView.holder.surface?.isValid == true) surfaceCreated(surfaceView.holder)
     }
 
+    private fun onBottomGameHover(event: MotionEvent): Boolean {
+        val pen = PenStream.penIndex(event)
+        if (pipUi || pen < 0) return false
+        return when (routePen(event, pen)) {
+            PenRouter.Route.TOUCH -> false
+            PenRouter.Route.PEN -> {
+                notePress(event)
+                penSample(event, pen)
+                true
+            }
+            else -> true
+        }
+    }
+
     private fun onBottomGameTouch(event: MotionEvent): Boolean {
         if (pipUi) return true
-        if (!event.isFromSource(InputDevice.SOURCE_TOUCHSCREEN)) return false
+        if (!event.isFromSource(InputDevice.SOURCE_TOUCHSCREEN) && PenStream.penIndex(event) < 0) return false
         notePress(event)
         if (event.actionMasked == MotionEvent.ACTION_DOWN) {
             drawerControllerActive = false
@@ -5424,6 +5558,7 @@ class SessionActivity : ComponentActivity(), SurfaceHolder.Callback {
         padBridge?.stop()
         DeckControls.clearRouter(inputRouter)
         inputRouter = null
+        cancelPen()
         heldKeys.clear()
         heldButtons.clear()
         steamController?.stop()
