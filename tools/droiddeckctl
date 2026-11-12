@@ -40,6 +40,13 @@ PEN_MAX_MS = 30_000
 PEN_MAX_BATCH = 8
 PEN_PHASES = ("hover", "down", "move", "up", "out", "cancel")
 PEN_BUTTONS = ("primary", "secondary")
+UINPUT_SCALE = 16
+UINPUT_PRESSURE = 4095
+UINPUT_DISTANCE = 255
+UINPUT_REGISTER_MS = 1000
+UINPUT_TAIL_MS = 300
+UINPUT_SYNC = "droiddeckctl-pen-done"
+UINPUT_PROBE = "command -v uinput >/dev/null 2>&1 || echo no-uinput; [ -w /dev/uinput ] || echo no-dev-uinput"
 
 
 class ControlError(RuntimeError):
@@ -76,10 +83,11 @@ def adb_path(configured: str | None) -> str:
     raise ControlError("adb not found; set ADB, ANDROID_HOME, or ANDROID_SDK_ROOT", "ADB_NOT_FOUND")
 
 
-def run_adb(adb: str, serial: str, *args: str, timeout: float = 30) -> subprocess.CompletedProcess[bytes]:
+def run_adb(adb: str, serial: str, *args: str, timeout: float = 30,
+            stdin: bytes | None = None) -> subprocess.CompletedProcess[bytes]:
     try:
         return subprocess.run(
-            [adb, "-s", serial, *args], capture_output=True, check=False, timeout=timeout
+            [adb, "-s", serial, *args], input=stdin, capture_output=True, check=False, timeout=timeout
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
         raise ControlError(str(exc), "ADB_FAILED") from exc
@@ -604,6 +612,10 @@ def pen_lerp(span: tuple[float, float], fraction: float) -> float:
     return span[0] + (span[1] - span[0]) * fraction
 
 
+def pen_space(args: argparse.Namespace) -> str:
+    return args.space or ("display" if args.via == "uinput" else "output")
+
+
 def pen_samples(args: argparse.Namespace) -> tuple[list[dict], list[dict]]:
     for name in ("duration", "hold", "hover_ms"):
         if getattr(args, name, 0) < 0:
@@ -659,7 +671,7 @@ def pen_samples(args: argparse.Namespace) -> tuple[list[dict], list[dict]]:
         timeline.append((up + lead, "out", end[0], end[1], None, []))
 
     total = timeline[-1][0] or 1
-    digits = 5 if args.space == "fraction" else 2
+    digits = 2 if pen_space(args) == "output" else 5
     samples = []
     for t, phase, x, y, pressure, buttons in timeline:
         sample = {"t": round(t), "phase": phase, "x": round(x, digits), "y": round(y, digits), "buttons": buttons}
@@ -714,11 +726,13 @@ def validate_pen(request: dict) -> None:
             fail(f"{where}: t {t:g} is before the previous {previous:g}")
         return t
 
+    via = request.get("via", "pipeline")
     space = request.get("space", "output")
-    if space not in ("output", "fraction"):
-        fail(f"space {space!r} is not output or fraction")
-    extent = 1 if space == "fraction" else float("inf")
-    rule = "0..1" if space == "fraction" else "0 or more"
+    spaces = ("display",) if via == "uinput" else ("output", "fraction")
+    if space not in spaces:
+        fail(f"--via {via} takes --space {' or '.join(spaces)}, not {space!r}")
+    extent = float("inf") if space == "output" else 1
+    rule = "0 or more" if space == "output" else "0..1"
     if request.get("tool", "pen") not in ("pen", "eraser"):
         fail(f"tool {request.get('tool')!r} is not pen or eraser")
     batch = request.get("batch", 1)
@@ -789,21 +803,169 @@ def validate_pen(request: dict) -> None:
         fail(f"fingers {', '.join(map(str, sorted(held)))} are still down at the end; lift them with up")
 
 
+def validate_uinput(request: dict) -> None:
+    """What a uinput pen device cannot do."""
+    def fail(message: str) -> None:
+        raise ControlError(message, "INVALID_INPUT")
+
+    if request.get("fingers"):
+        fail("--finger needs --via pipeline: the uinput device is a pen only")
+    if request.get("batch", 1) != 1:
+        fail("--batch needs --via pipeline: Android batches the samples of a uinput pen itself")
+    samples = request["samples"]
+    if samples[-1]["phase"] != "out":
+        fail("--keep needs --via pipeline: the uinput pen goes away when the command ends")
+    for index, sample in enumerate(samples):
+        if sample["phase"] == "cancel":
+            fail(f"sample {index}: a uinput pen cannot cancel")
+        distance = sample.get("distance", 0)
+        if distance != int(distance) or distance > UINPUT_DISTANCE:
+            fail(f"sample {index}: distance {distance:g} must be a whole number of device units, 0..{UINPUT_DISTANCE}, "
+                 "with --via uinput")
+
+
 def pen_request(args: argparse.Namespace) -> dict:
     if not 1 <= args.batch <= PEN_MAX_BATCH:
         raise ControlError(f"--batch must be 1..{PEN_MAX_BATCH}", "INVALID_INPUT")
     samples, fingers = pen_samples(args)
-    request = {"type": "pen", "via": args.via, "space": args.space, "tool": args.tool, "batch": args.batch,
-               "samples": pen_compact(samples)}
+    uinput = args.via == "uinput"
+    request = {"type": "pen", "via": args.via, "space": pen_space(args), "tool": args.tool, "batch": args.batch,
+               "samples": samples if uinput else pen_compact(samples)}
     if fingers:
         request["fingers"] = fingers
     validate_pen(request)
+    if uinput:
+        validate_uinput(request)
+        return request
     size = len(base64.b64encode(json.dumps(request, separators=(",", ":")).encode()))
     size += len(f"content call --uri {AUTHORITY} --method input --extra request:s:")
     if size > ADB_COMMAND_CAP:
         raise ControlError(f"The pen gesture makes a {size // 1024} KiB adb command, over the {ADB_COMMAND_CAP // 1024} KiB "
                            "adb takes; shorten it or lower --rate", "INVALID_INPUT")
     return request
+
+
+def input_viewport(dump: str) -> dict:
+    """The display Android maps an internal touchscreen to, from `dumpsys input`: TouchInputMapper::findViewport
+    takes the internal viewport of display 0, else the first internal one, and disables the device while it is
+    inactive."""
+    blocks = re.findall(r"^[ \t]*Viewports:\n((?:[ \t]+Viewport .*\n?)+)", dump, re.M)
+    viewports = []
+    for line in re.findall(r"Viewport INTERNAL: (.*)", blocks[-1] if blocks else dump):
+        fields = dict(re.findall(r"(\w+)=(\[[^\]]*\]|[^,\s]+)", line))
+        size = re.fullmatch(r"\[(\d+), (\d+)\]", fields.get("deviceSize", ""))
+        if size and re.fullmatch(r"-?\d+", fields.get("displayId", "")) and fields.get("orientation") in ("0", "1", "2", "3"):
+            viewports.append({"display": int(fields["displayId"]), "rotation": int(fields["orientation"]),
+                              "size": [int(size.group(1)), int(size.group(2))], "active": fields.get("isActive") != "[0]"})
+    if not viewports:
+        raise ControlError("`dumpsys input` shows no internal display viewport to map the pen to", "NO_VIEWPORT")
+    viewport = next((v for v in viewports if v["display"] == 0), viewports[0])
+    if not viewport["active"]:
+        raise ControlError(f"Display {viewport['display']} is off, and Android ignores touchscreens on it; "
+                           "wake the device first", "NO_VIEWPORT")
+    return viewport
+
+
+def uinput_point(x: float, y: float, tilt_x: float, tilt_y: float, rotation: int, width: int,
+                 height: int) -> tuple[int, int, int, int]:
+    """Display fractions and tilt as shown, in raw units of a panel in its natural orientation: the inverse of
+    TouchInputMapper::computeInputTransforms, which counts a flipped axis down from size - 1."""
+    def raw(fraction: float, size: int, flip: bool) -> int:
+        return min(size - 1, max(0, round(size - 1 - fraction * size if flip else fraction * size)))
+
+    if rotation == 1:
+        return raw(y, width, True), raw(x, height, False), round(-tilt_y), round(tilt_x)
+    if rotation == 2:
+        return raw(x, width, True), raw(y, height, True), round(-tilt_x), round(-tilt_y)
+    if rotation == 3:
+        return raw(y, width, False), raw(x, height, True), round(tilt_y), round(-tilt_x)
+    return raw(x, width, False), raw(y, height, False), round(tilt_x), round(tilt_y)
+
+
+def uinput_commands(request: dict, viewport: dict) -> list[dict]:
+    """The `uinput -` script (frameworks/base/cmds/uinput) that draws the gesture with a virtual direct pen."""
+    rotation = viewport["rotation"]
+    natural = viewport["size"][::-1] if rotation % 2 else viewport["size"]
+    width, height = (n * UINPUT_SCALE for n in natural)
+    tool = "BTN_TOOL_RUBBER" if request["tool"] == "eraser" else "BTN_TOOL_PEN"
+
+    def axis(code: str, low: int, high: int) -> dict:
+        return {"code": code, "info": {"value": 0, "minimum": low, "maximum": high, "fuzz": 0, "flat": 0, "resolution": 0}}
+
+    commands = [
+        # A virtual bus keeps the pen internal, so it maps to the internal display (EventHub::isExternalDeviceLocked)
+        {"id": 1, "command": "register", "name": "DroidDeck agent pen", "bus": "virtual", "configuration": [
+            {"type": "UI_SET_EVBIT", "data": ["EV_KEY", "EV_ABS"]},
+            {"type": "UI_SET_KEYBIT", "data": ["BTN_TOOL_PEN", "BTN_TOOL_RUBBER", "BTN_TOUCH", "BTN_STYLUS", "BTN_STYLUS2"]},
+            {"type": "UI_SET_ABSBIT", "data": ["ABS_X", "ABS_Y", "ABS_PRESSURE", "ABS_DISTANCE", "ABS_TILT_X", "ABS_TILT_Y"]},
+            {"type": "UI_SET_PROPBIT", "data": ["INPUT_PROP_DIRECT"]},
+        ], "abs_info": [axis("ABS_X", 0, width - 1), axis("ABS_Y", 0, height - 1), axis("ABS_PRESSURE", 0, UINPUT_PRESSURE),
+                        axis("ABS_DISTANCE", 0, UINPUT_DISTANCE), axis("ABS_TILT_X", -90, 90), axis("ABS_TILT_Y", -90, 90)]},
+        # Commands read in one go cannot wait for the device to be added; updateTimeBase after this delay would
+        # restart the clock at parse time and drop the first samples.
+        {"id": 1, "command": "delay", "duration": UINPUT_REGISTER_MS},
+    ]
+    sent = {tool: 0, "BTN_TOUCH": 0, "BTN_STYLUS": 0, "BTN_STYLUS2": 0}
+
+    def frame(sample: dict, phase: str) -> list:
+        near, contact = phase != "out", phase in ("down", "move")
+        values = {tool: int(near), "BTN_TOUCH": int(contact), "BTN_STYLUS": int(near and "primary" in sample["buttons"]),
+                  "BTN_STYLUS2": int(near and "secondary" in sample["buttons"])}
+        if near:
+            x, y, tilt_x, tilt_y = uinput_point(sample["x"], sample["y"], sample.get("tiltX", 0), sample.get("tiltY", 0),
+                                                rotation, width, height)
+            # TouchInputMapper takes a pen with pressure 0 for a hovering one, even with BTN_TOUCH down
+            pressure = max(1, round(sample["pressure"] * UINPUT_PRESSURE)) if contact else 0
+            values.update(ABS_X=x, ABS_Y=y, ABS_PRESSURE=pressure, ABS_DISTANCE=0 if contact else int(sample.get("distance", 0)),
+                          ABS_TILT_X=tilt_x, ABS_TILT_Y=tilt_y)
+        events = []
+        for code, value in values.items():
+            if sent.get(code) != value:
+                events += ["EV_KEY" if code.startswith("BTN_") else "EV_ABS", code, value]
+                sent[code] = value
+        return events + ["EV_SYN", "SYN_REPORT", 0] if events else []
+
+    now = 0
+    for sample in request["samples"]:
+        # Android's UP repeats the last contact's position and pressure, so a lift first touches where it ends
+        phases = ("move", "up") if sample["phase"] == "up" else (sample["phase"],)
+        events = [value for phase in phases for value in frame(sample, phase)]
+        if not events:
+            # The kernel drops a frame that changes nothing, so a pen held still moves by one unit to keep reporting,
+            # as a real digitizer does; otherwise the session's hover watchdog takes a silent pen for gone
+            sent["ABS_X"] += 1 if sent["ABS_X"] + 1 < width else -1
+            events = ["EV_ABS", "ABS_X", sent["ABS_X"], "EV_SYN", "SYN_REPORT", 0]
+        if sample["t"] > now:
+            commands.append({"id": 1, "command": "delay", "duration": sample["t"] - now})
+            now = sample["t"]
+        commands.append({"id": 1, "command": "inject", "events": events})
+    return commands + [{"id": 1, "command": "delay", "duration": UINPUT_TAIL_MS},
+                       {"id": 1, "command": "sync", "syncToken": UINPUT_SYNC}]
+
+
+def pen_uinput(adb: str, serial: str, request: dict) -> dict:
+    probe = run_adb(adb, serial, "shell", UINPUT_PROBE)
+    if probe.returncode != 0:
+        raise ControlError((probe.stdout + probe.stderr).decode(errors="replace").strip() or "adb shell failed", "ADB_FAILED")
+    missing = probe.stdout.decode(errors="replace").split()
+    if "no-uinput" in missing:
+        raise ControlError("This device's shell has no `uinput` command; use --via pipeline", "UINPUT_UNAVAILABLE")
+    if "no-dev-uinput" in missing:
+        raise ControlError("The ADB shell cannot write /dev/uinput on this device; use --via pipeline", "UINPUT_UNAVAILABLE")
+    viewport = input_viewport(run_adb(adb, serial, "shell", "dumpsys", "input").stdout.decode(errors="replace"))
+    script = "".join(json.dumps(command) + "\n" for command in uinput_commands(request, viewport))
+    samples = request["samples"]
+    started = time.monotonic()
+    result = run_adb(adb, serial, "shell", "uinput", "-", stdin=script.encode(),
+                     timeout=(UINPUT_REGISTER_MS + samples[-1]["t"] + UINPUT_TAIL_MS) / 1000 + 30)
+    elapsed = round((time.monotonic() - started) * 1000)
+    if UINPUT_SYNC not in result.stdout.decode(errors="replace"):
+        detail = (result.stderr or result.stdout).decode(errors="replace").strip()[-400:]
+        raise ControlError(f"uinput stopped before the end of the gesture (exit {result.returncode})"
+                           + (f": {detail}" if detail else "") + "; `adb logcat -s UINPUT UinputDevice` tells why",
+                           "UINPUT_FAILED")
+    return {"ok": True, "command": "input", "type": "pen", "via": "uinput", "samples": len(samples), "ms": elapsed,
+            "viewport": {key: viewport[key] for key in ("display", "rotation", "size")}}
 
 
 def input_request(args: argparse.Namespace) -> dict:
@@ -1056,7 +1218,10 @@ def execute(args: argparse.Namespace, adb: str, serial: str) -> dict:
                                   "CDP_FAILED"), serial)
 
     if command == "input":
-        return add_serial(checked(provider_call(adb, serial, "input", request=input_request(args), timeout=60),
+        request = input_request(args)
+        if request.get("via") == "uinput":
+            return add_serial(pen_uinput(adb, serial, request), serial)
+        return add_serial(checked(provider_call(adb, serial, "input", request=request, timeout=60),
                                   "INPUT_FAILED"), serial)
 
     if command == "ui":
@@ -1353,15 +1518,17 @@ def build_parser() -> argparse.ArgumentParser:
     pen_button.add_argument("y", type=float)
     pen_button.add_argument("--hold", type=int, default=120)
     for op in (pen_hover, pen_tap, pen_stroke, pen_button):
-        op.add_argument("--space", choices=["output", "fraction"], default="output")
+        op.add_argument("--space", choices=["output", "fraction", "display"],
+                        help="output (default) or fraction with pipeline; display, fractions of the screen as shown, with uinput")
         op.add_argument("--tool", choices=["pen", "eraser"], default="pen")
         op.add_argument("--tilt-x", type=pen_span, metavar="DEG[:DEG]")
         op.add_argument("--tilt-y", type=pen_span, metavar="DEG[:DEG]")
-        op.add_argument("--distance", type=float, help="hover distance (AXIS_DISTANCE)")
+        op.add_argument("--distance", type=float, help="hover distance (AXIS_DISTANCE; device units 0..255 with uinput)")
         op.add_argument("--rate", type=float, default=PEN_RATE, help="samples per second")
         op.add_argument("--batch", type=int, default=1, help="samples per event, the older ones as history")
         op.add_argument("--finger", type=float, nargs=2, metavar=("X", "Y"), help="a finger down for the middle half")
-        op.add_argument("--via", choices=["pipeline"], default="pipeline", help="pipeline: the app's own input path")
+        op.add_argument("--via", choices=["pipeline", "uinput"], default="pipeline",
+                        help="pipeline: the app's own input path; uinput: a virtual pen through Android's input reader")
 
     ui = commands.add_parser("ui", help="the app's own UI: dump nodes, click or type by test tag")
     ui_ops = ui.add_subparsers(dest="ui_op", required=True)
@@ -1464,7 +1631,7 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-EXIT_ADB = {"ADB_NOT_FOUND", "ADB_FAILED", "INVALID_PROVIDER_RESPONSE"}
+EXIT_ADB = {"ADB_NOT_FOUND", "ADB_FAILED", "INVALID_PROVIDER_RESPONSE", "UINPUT_UNAVAILABLE", "UINPUT_FAILED", "NO_VIEWPORT"}
 EXIT_SESSION = {
     "SESSION_ACTIVE", "NO_ACTIVE_SESSION", "SESSION_NOT_SUSPENDED", "SESSION_FAILED", "GUEST_EXIT",
     "GUEST_START_FAILED", "RUNTIME_INSTALL_FAILED", "DESKTOP_INSTALL_FAILED", "ACTIVITY_START_FAILED",

@@ -425,8 +425,10 @@ Xwayland) would give Proton drawing programs Wintab pressure; it is left out of 
   The bridge turns them into `MotionEvent`s on the main thread in the order Android sends them and dispatches them
   through `SessionActivity`'s own entry points to `PenStream`, so modes, palm rejection and button mapping are
   exercised. The synthetic events have no input device, so the bridge announces tilt itself. `--via uinput`
-  instead registers a virtual pen with `adb shell uinput -`, which tests Android's own mapping (hover, tilt,
-  buttons, eraser, batching) end to end.
+  instead registers a virtual direct pen on the `virtual` bus with `adb shell uinput -` and draws in fractions
+  of the screen as shown, turned into the panel's natural orientation with the rotation of the viewport
+  `dumpsys input` reports, which tests Android's own mapping (hover, tilt, buttons, eraser, batching) end to
+  end. It has no fingers, so palm tests use the bridge.
 - A `droiddeck-scenario` scenario draws strokes in the desktop and checks them with `wev` and `xinput test-xi2`
   run inside the session. The compositor's `test-input` FIFO is not used: `droiddeck-desktop` removes it.
 

@@ -127,6 +127,8 @@ tools/droiddeckctl input pen stroke 200 300 900 500 --pressure 0.2:0.9 --tilt-x 
 tools/droiddeckctl input pen hover 400 300 --to 600 300 --duration 500
 tools/droiddeckctl input pen button primary 400 300 --hold 200
 tools/droiddeckctl input pen hover 0.5 0.5 --space fraction --duration 600 --finger 0.2 0.8
+tools/droiddeckctl input pen stroke 0.2 0.5 0.8 0.5 --via uinput --pressure 0.1:0.9 --tilt-x=-30:30
+tools/droiddeckctl input pen tap 0.5 0.5 --via uinput --tool eraser
 
 tools/droiddeckctl ui dump
 tools/droiddeckctl ui click rail-steam
@@ -203,7 +205,7 @@ mode except the desktop).
 
 `input pen` draws with a synthetic pen. `hover` comes near at a point (and glides to `--to`), then
 leaves unless `--keep`; `tap` and `stroke` hover for `--hover-ms` (80), touch down, lift and leave;
-`button` holds a side button while hovering. Every command takes `--space output|fraction`,
+`button` holds a side button while hovering. Every command takes `--via pipeline|uinput`, `--space`,
 `--tool pen|eraser`, `--tilt-x`/`--tilt-y` in degrees, `--distance`, `--rate` (120 samples a second),
 `--batch` and `--finger X Y`. `FROM:TO` values interpolate over the contact (pressure) or the whole
 gesture (tilt); a range that starts negative needs `=`, as in `--tilt-x=-30:30`.
@@ -229,13 +231,13 @@ at all. One that starts while the pen hovers is sent, and Palm rejection decides
 a `tap` at its default `--hold` lands the finger while the pen hovers; a `stroke` at least twice
 `--hover-ms` long lands it during contact.
 
-Positions are on the session's picture as drawn, mapped back through the rectangle a real pen is
-mapped through; `tap` and `swipe` use the whole output, which differs only when the picture is
-letterboxed. Synthetic events have no input device: when the gesture tilts, tilt is announced to
-the compositor before the first sample, and `--distance` reaches the `MotionEvent` but the
-compositor gets 0, as for a pen whose device has no distance range. A pen that stays silent for
-2 s counts as gone, so `--keep` lasts that long. Real pen and finger input is not paused and
-interleaves with the agent's.
+Positions (`--space output`, the default, or `fraction`) are on the session's picture as drawn,
+mapped back through the rectangle a real pen is mapped through; `tap` and `swipe` use the whole
+output, which differs only when the picture is letterboxed. Synthetic events have no input device:
+when the gesture tilts, tilt is announced to the compositor before the first sample, and
+`--distance` reaches the `MotionEvent` but the compositor gets 0, as for a pen whose device has no
+distance range. A pen that stays silent for 2 s counts as gone, so `--keep` lasts that long. Real
+pen and finger input is not paused and interleaves with the agent's.
 
 The request is `{"type":"pen","via":"pipeline","space","tool","batch","samples":[...],"fingers":[...]}`.
 A sample is `{t, phase, x, y, pressure, distance, tiltX, tiltY, buttons}`: `phase` is `hover`,
@@ -267,6 +269,43 @@ editor, takes the hover events:
 | `touch` | Pen set to Touch: the pen takes the finger route |
 | `blocked` | The drawer, achievements or an input settings panel is open, or the session is suspended |
 | `ui` | No pen event reached the pen router: the app's own UI, on-screen controls or picture-in-picture took them |
+
+With `--via uinput` the CLI never calls the app. It registers a virtual pen with `adb shell uinput -`
+and draws with it, so Android's own input reader makes the `MotionEvent`s (tool type, hover, pressure,
+tilt and orientation, distance, button state, batching) and the session handles them like a built-in
+pen's. Positions are `--space display`, the only and default space here: fractions of the screen as
+currently shown, whatever its rotation. The CLI reads the rotation and size of the display Android maps
+internal touchscreens to (the internal viewport of display 0 in `dumpsys input`) and turns positions
+and tilt into the panel's natural orientation. A session picture letterboxed on the screen covers only
+part of it; `screenshot` shows where.
+
+The device is a direct touchscreen on the `virtual` bus, which Android counts as internal, with
+`BTN_TOOL_PEN` (`BTN_TOOL_RUBBER` for `--tool eraser`), `BTN_TOUCH`, `BTN_STYLUS` for `primary`,
+`BTN_STYLUS2` for `secondary`, `ABS_X`/`ABS_Y` at 16 units a pixel, `ABS_PRESSURE` 0 to 4095,
+`ABS_DISTANCE` 0 to 255 and `ABS_TILT_X`/`ABS_TILT_Y` from -90 to 90 degrees. The script waits 1 s
+after registering, since `uinput` reading a script cannot wait for Android to add the device. Each
+sample sends what changed, and a pen held still moves by one unit every other sample, so it keeps
+reporting at `--rate` as a real digitizer does instead of falling silent. Contact sends
+a pressure of at least 1, because Android takes a pen at pressure 0 for a hovering one, and a lift
+first moves to where it lifts, because Android's `UP` repeats the last contact's position.
+`--distance` is in device units, a whole number up to 255, sent while hovering (0 in contact).
+`--finger`, `--batch` and `--keep` need the pipeline: the device is a pen only, Android batches its
+samples itself, and it goes away when the command ends. A side button changes `buttonState` without
+`ACTION_BUTTON_PRESS`, as a barrel button does on the Find N6.
+
+The answer comes once `uinput` has played the whole script:
+`{"via":"uinput","samples":N,"ms":T,"viewport":{"display","rotation","size"}}`. `ms` includes the wait
+for registration, and `rotation` counts quarter turns like `Surface.ROTATION_*`. `UINPUT_UNAVAILABLE`
+(exit 3) means the shell has no `uinput` command or cannot write `/dev/uinput`, `NO_VIEWPORT` (exit 3)
+that `dumpsys input` lists no internal display or that it is off, and `UINPUT_FAILED` (exit 3) that
+`uinput` stopped early; `adb logcat -s UINPUT UinputDevice` tells why.
+
+Checked on the Find N6 (Android 16) with a hand-written script before this command existed:
+`adb shell uinput -` registers such a pen without root, Android reports it as a stylus touchscreen
+with pressure, distance and tilt, and `BTN_STYLUS` shows only in `buttonState`. Not yet checked on a
+device: this command itself, the `virtual` bus, `BTN_TOOL_RUBBER`, `BTN_STYLUS2`, a rotated screen,
+whether 1 s is enough for registration, and other Android versions, whose `uinput` may not know bus or
+event names.
 
 ## State (schema 2)
 
