@@ -1,8 +1,8 @@
 package com.droiddeck.launcher.input
 
-// A pen delivered as a tablet leaves the host pointer where it is and KWin draws the tool cursor in its own frame,
-// so the overlay hides while the pen is near and, when the pen leaves, returns to its earlier state or to what other
-// input made of it meanwhile.
+// While a pen is delivered as a tablet, KWin draws the tool cursor in its own frame, so the overlay hides while the
+// pen is near. When the pen leaves, the overlay's visibility returns to its earlier state or to what other input made
+// of it meanwhile; its position is where the pen left, where the compositor moves the pointer.
 class PenCursorPolicy {
     data class Overlay(val visible: Boolean, val mouseOwns: Boolean)
 
