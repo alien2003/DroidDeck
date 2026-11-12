@@ -23,6 +23,7 @@ import org.robolectric.RobolectricTestRunner
 import org.robolectric.Shadows.shadowOf
 import org.robolectric.annotation.Config
 import org.robolectric.shadows.InputDeviceBuilder
+import org.robolectric.util.ReflectionHelpers
 
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [28], manifest = Config.NONE)
@@ -119,6 +120,23 @@ class PenStreamTest {
         assertEquals(listOf(6554, 13107, 26214, 65535), records.map { it.pressure })
         assertTrue(records.all { it.flags == PEN_IN or PEN_TIP })
         assertEquals(y(300f), records.last().y)
+    }
+
+    @Test fun thePressurePresetCurvesEverySampleAndIsBuiltOncePerChange() {
+        stream.pressurePreset = SessionPrefs.PEN_PRESSURE_FIRM
+        val firm = ReflectionHelpers.getField<PenAxes.PressureCurve>(stream, "pressureCurve")
+        stream.pressurePreset = SessionPrefs.PEN_PRESSURE_FIRM
+        assertSame(firm, ReflectionHelpers.getField(stream, "pressureCurve"))
+        send(MotionEvent.ACTION_DOWN, Sample(100, 10f, pressure = 0.3f), Sample(103, 20f, pressure = 0.5f))
+        send(MotionEvent.ACTION_MOVE, Sample(106, 30f, pressure = 0.9f), Sample(109, 40f, pressure = 1f))
+        val expected = listOf(0.1488, 0.3162, 0.7691, 1.0)
+        assertEquals(expected.size, records.size)
+        for ((i, record) in records.withIndex()) assertEquals("$i", expected[i], record.pressure / 65535.0, 1e-4)
+        records.clear()
+        stream.pressurePreset = SessionPrefs.PEN_PRESSURE_NORMAL
+        assertSame(PenAxes.LINEAR, ReflectionHelpers.getField(stream, "pressureCurve"))
+        send(MotionEvent.ACTION_MOVE, Sample(112, 50f, pressure = 0.5f))
+        assertEquals(listOf(32768), records.map { it.pressure })
     }
 
     @Test fun cancelEndsTheStrokeWithoutAClickAndIgnoresTheRest() {

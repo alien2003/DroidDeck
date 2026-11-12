@@ -146,7 +146,10 @@ Stored as `SessionPrefs` key `"pen"`, global like `"touch"`, default `auto`.
 - In Auto and Mouse the pen never goes through the touchpad or gesture recognisers, so it cannot leave a
   touchpad drag held when the touch mode changes, the failure reported on #318.
 - The drawer shows Auto with its resolved route, like the touch mode: "Auto (tablet)" or "Auto (mouse)". The
-  compositor publishes the route the pen would get now in its query snapshot.
+  compositor publishes the route the pen would get now in its query snapshot: tablet when the client under the pen's
+  last position (before the first pen sample, the client with keyboard focus or under the pointer) bound tablet-v2
+  and is not gamescope. Steam, glasses and a program's pointer lock show "Auto (mouse)". The launcher's Controls tab
+  shows plain Auto, since no session is running there.
 
 ## Settings
 
@@ -170,17 +173,23 @@ a line for each.
   `BTN_STYLUS2` to tablet clients (GTK, Qt, Xwayland and Krita read it as the right button) and `BTN_RIGHT` as a
   pointer. Middle click sends `BTN_STYLUS` / `BTN_MIDDLE`. A second barrel button, where a pen has one, sends the
   other click: middle when the side button is Right click, right otherwise. "Eraser while held" switches the tool to
-  the eraser: while hovering, at once (on the tablet route the pen leaves proximity and the eraser enters); during
-  contact the switch waits until the tip lifts, and a press that comes with the tip's `DOWN` starts the stroke as
-  the eraser. Off sends nothing, and a Bluetooth pen key is still consumed. The raw mapping (primary =
-  `BTN_STYLUS`, read as middle) is one choice away. The mapping is done in Kotlin; the compositor renders the right
-  and middle bits it gets.
+  the eraser: while hovering, at once (on the tablet route the pen tool's `proximity_out`, then the eraser's
+  `proximity_in`, which is not the pen leaving; see Android capture); during contact the switch waits until the tip
+  lifts, and a press that comes with the tip's `DOWN` starts the stroke as the eraser. Off sends nothing, and a
+  Bluetooth pen key is still consumed. The raw mapping (primary = `BTN_STYLUS`, read as middle) is one choice away.
+  The mapping is done in Kotlin; the compositor renders the right and middle bits it gets.
 - **Eraser end.** A real eraser is a separate tablet-v2 tool. As a pointer, eraser contact is a right click, as in
   Moonlight and GameNative; hover never holds a button.
 - **Pressure.** Soft, Normal and Firm are cubic Bézier curves from (0,0) to (1,1), the representation KWin and
-  GNOME use, applied once in Kotlin on the tablet route before quantising to 0..65535. KWin applies its own curve
-  only to libinput devices, so a nested tablet gets no second curve, and the Plasma Drawing Tablet page lists only
-  libinput devices and does not show the DroidDeck pen. DroidDeck never writes Plasma's `[ButtonRebinds]`.
+  GNOME use. In KWin's format the control points are Soft `0,0.25;0.75,1;`, Normal `0,0;1,1;` (the identity, KWin's
+  default) and Firm `0.25,0;1,0.75;`, which is GNOME's mapping of its feel slider at 0.375, 0.5 and 0.625. Half
+  pressure becomes 0.68 with Soft and 0.32 with Firm; Firm is Soft mirrored. Kotlin applies the curve once, to every
+  pen record after clamping to 0..1 and before quantising to 0..65535; the pointer routes ignore pressure. The curve
+  is a table of 1025 points at even steps of the Bézier parameter, built when the setting changes, and follows the
+  exact curve within 0.00004. Even steps of pressure would be off by up to 0.004 at the end where Soft and Firm rise
+  like a square root. KWin applies its own curve only to libinput devices, so a nested tablet gets no second curve,
+  and the Plasma Drawing Tablet page lists only libinput devices and does not show the DroidDeck pen. A program's
+  own curve, such as Krita's, applies on top. DroidDeck never writes Plasma's `[ButtonRebinds]`.
 - **No cursor setting.** In tablet mode KWin draws the tool cursor the app asks for (Krita's brush outline, a cross
   by default); as a pointer the pen moves the normal cursor.
 

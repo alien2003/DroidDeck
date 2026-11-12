@@ -2005,6 +2005,7 @@ class SessionActivity : ComponentActivity(), SurfaceHolder.Callback {
         if (penSettings.palm != nextPen.palm) Log.i(TAG, "palm rejection ${penSettings.palm} -> ${nextPen.palm}")
         penSettings = nextPen
         penStream.sideButton = nextPen.button
+        penStream.pressurePreset = nextPen.pressure
         palmGate.enabled = nextPen.palm != SessionPrefs.PEN_PALM_OFF
         fingersScroll = nextPen.palm == SessionPrefs.PEN_PALM_SCROLL && nextPen.mode != SessionPrefs.PEN_TOUCH
         if (!penSeen && (SessionPrefs.penSeen(this) || PenStream.stylusConnected())) notePenSeen()

@@ -43,8 +43,16 @@ class PenStream(private val sink: Sink) {
     private var distance = 0
     private var tilted = false
     private var time = 0L
+    private var pressureCurve = PenAxes.LINEAR
 
     var sideButton = SessionPrefs.PEN_BUTTON_RIGHT
+
+    var pressurePreset = SessionPrefs.PEN_PRESSURE_NORMAL
+        set(value) {
+            if (value == field) return
+            field = value
+            pressureCurve = PenPressure.forPreset(value)
+        }
 
     val inProximity: Boolean get() = proximity
 
@@ -234,7 +242,7 @@ class PenStream(private val sink: Sink) {
 
     private fun sample(event: MotionEvent, pointer: Int, h: Int, area: RectF, width: Int, height: Int) {
         place(event, pointer, h, area, width, height)
-        pressure = PenAxes.pressure(event.axis(MotionEvent.AXIS_PRESSURE, pointer, h))
+        pressure = PenAxes.pressure(event.axis(MotionEvent.AXIS_PRESSURE, pointer, h), pressureCurve)
         distance = PenAxes.distance(event.axis(MotionEvent.AXIS_DISTANCE, pointer, h), distanceMin, distanceMax)
         tilted = PenAxes.tilt(event.axis(MotionEvent.AXIS_TILT, pointer, h), event.axis(MotionEvent.AXIS_ORIENTATION, pointer, h), tilt)
         time = if (h < 0) event.eventTime else event.getHistoricalEventTime(h)
