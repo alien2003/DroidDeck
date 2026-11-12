@@ -3623,8 +3623,16 @@ static void pen_tablet(const struct input_msg *m, int tool) {
 static void deliver_pen(const struct input_msg *m) {
     const uint32_t time_ms = (uint32_t)m->p8;
     if (!(m->p1 & PEN_IN) || (m->p1 & PEN_CANCEL)) {
+        /* Like a tablet's core pointer: the mouse cursor stays where the pen left the tablet route. */
+        const int warp = g_pen.route == PEN_ROUTE_TABLET && !(g_active_constraint && g_active_constraint->is_lock);
+        const double x = g_pen.x, y = g_pen.y;
         pen_end_route(time_ms);
         memset(&g_pen, 0, sizeof(g_pen));
+        if (warp) {
+            g_raw_valid = 0;
+            pointer_event(x, y, 0, 0);
+            g_raw_valid = 0;
+        }
         publish_query_state();
         return;
     }

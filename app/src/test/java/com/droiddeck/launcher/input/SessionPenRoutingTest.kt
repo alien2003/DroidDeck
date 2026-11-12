@@ -76,7 +76,7 @@ class SessionPenRoutingTest {
         assertEquals(listOf(PenStream.CAP_PRESSURE), CompositorShadow.capabilities)
     }
 
-    @Test fun aTabletPenHidesTheOverlayWithoutMovingItAndRestoresItWhenItLeaves() {
+    @Test fun aTabletPenHidesTheOverlayWithoutMovingItAndRestoresItWhereThePenLeft() {
         CompositorShadow.route = PenCursorPolicy.ROUTE_TABLET
         showCursor(100f, 200f, fromMouse = true)
         assertTrue(state<Boolean>("cursorVisible").value)
@@ -92,7 +92,7 @@ class SessionPenRoutingTest {
         assertEquals(listOf(PEN_IN or PEN_TABLET, PEN_IN or PEN_TABLET, PEN_TABLET), CompositorShadow.pens.map { it.flags })
         assertTrue(state<Boolean>("cursorVisible").value)
         assertTrue(ReflectionHelpers.getField<Boolean>(activity, "mouseOwnsCursor"))
-        assertEquals(Offset(100f, 200f), state<Offset>("cursorPos").value)
+        assertEquals(Offset(520f, 300f), state<Offset>("cursorPos").value)
     }
 
     @Test fun aTabletPenLeavesAHiddenOverlayHiddenAndACancelRestoresItToo() {
@@ -110,7 +110,7 @@ class SessionPenRoutingTest {
         assertFalse(ReflectionHelpers.getField<Boolean>(activity, "mouseOwnsCursor"))
     }
 
-    @Test fun aMouseRemovedOrMovedWhileATabletPenHoversIsWhatTheOverlayShowsAfterTheProximity() {
+    @Test fun aMouseRemovedOrMovedWhileATabletPenHoversDecidesWhetherTheOverlayShowsWhereThePenLeft() {
         CompositorShadow.route = PenCursorPolicy.ROUTE_TABLET
         fun proximity(time: Long, meanwhile: () -> Unit = {}) {
             activity.dispatchGenericMotionEvent(event(MotionEvent.ACTION_HOVER_MOVE, time, pen to 500f))
@@ -129,7 +129,7 @@ class SessionPenRoutingTest {
         proximity(20_000) { showCursor(300f, 200f, fromMouse = true) }
         assertTrue(state<Boolean>("cursorVisible").value)
         assertTrue(ReflectionHelpers.getField<Boolean>(activity, "mouseOwnsCursor"))
-        assertEquals(Offset(300f, 200f), state<Offset>("cursorPos").value)
+        assertEquals(Offset(500f, 300f), state<Offset>("cursorPos").value)
     }
 
     @Test fun aPenOnThePointerRouteMovesTheOverlayAndLeavesItWhereThePenWas() {

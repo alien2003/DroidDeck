@@ -293,12 +293,16 @@ direct touches.
   moves the shared pointer position, resets the relative-motion origin and publishes the cursor position for the
   Android cursor overlay. Under a program's pointer lock the compositor sends buttons only, which closes the gap
   before Kotlin hears about the lock.
-- **Tablet route and the pointer.** A tablet stroke does not move the host pointer: tablet focus is independent
-  of the pointer in the protocol and in KWin, and every host user of the pointer position assumes it is the
-  client's `wl_pointer` position. The compositor keeps the pen position separately. `PenCursorPolicy` hides the
-  Android cursor overlay while a pen is near on the tablet route (KWin draws the tool cursor) and, when the pen
-  leaves, restores the overlay as it was or as other input left it meanwhile; on the pointer route the overlay
-  follows the pen as before. A sample that changes nothing for a client sends that client no frame.
+- **Tablet route and the pointer.** While the pen is near, the tablet route does not move the host pointer:
+  tablet focus is independent of the pointer in the protocol and in KWin, and every host user of the pointer
+  position assumes it is the client's `wl_pointer` position. The compositor keeps the pen position separately.
+  When the pen leaves, the compositor moves the pointer to where the pen left, through the normal pointer motion
+  path (not under a pointer lock). This matches a desktop graphics tablet, where the pen moves the one cursor; on
+  the device, the cursor otherwise came back where the trackpad had left it. `PenCursorPolicy` hides the Android
+  cursor overlay while a pen is near on the tablet route (KWin draws the tool cursor). When the pen leaves, it
+  restores the overlay's visibility as it was or as other input left it meanwhile, at the pen's last position.
+  On the pointer route the overlay follows the pen as before. A sample that changes nothing for a client sends that
+  client no frame.
 - **Lifecycle.** Surface destruction calls `droiddeck_tablet_surface_gone`, which sends `proximity_out` while the
   surface still exists. Tablet cleanup runs in resource destroy handlers, because libwayland runs a client's
   destroy listener before destroying its resources.

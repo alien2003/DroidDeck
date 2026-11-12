@@ -270,6 +270,7 @@ class SessionActivity : ComponentActivity(), SurfaceHolder.Callback {
     private var penTablet = false
     private var penDown = false
     private val penCursor = PenCursorPolicy()
+    private var penLeftAt = androidx.compose.ui.geometry.Offset.Zero
     private val penStream = PenStream(object : PenStream.Sink {
         override fun sample(flags: Int, x: Int, y: Int, pressure: Int, distance: Int, tiltX: Int, tiltY: Int, timeMs: Int) {
             WaylandCompositor.nativeSendPen(flags, x, y, pressure, distance, tiltX, tiltY, timeMs)
@@ -4210,18 +4211,22 @@ class SessionActivity : ComponentActivity(), SurfaceHolder.Callback {
             uiHandler.removeCallbacks(cursorResync)
             mouseOwnsCursor = false
             cursorVisible = false
+            penLeftAt = androidx.compose.ui.geometry.Offset(
+                event.getX(pen).coerceIn(area.left, area.right), event.getY(pen).coerceIn(area.top, area.bottom))
         }
         return true
     }
 
     private fun penCursorLeft() {
         val restore = penCursor.restoreOnLeave() ?: return
+        // The compositor moves the pointer to where the pen left; resync after it has.
+        if (!pointerLocked) cursorPos = penLeftAt
         mouseOwnsCursor = restore.mouseOwns
         cursorVisible = restore.visible && !pointerLocked
         if (!restore.mouseOwns && !restore.visible) return
         cursorResyncIdle = 0
         uiHandler.removeCallbacks(cursorResync)
-        uiHandler.post(cursorResync)
+        uiHandler.postDelayed(cursorResync, 60)
     }
 
     private val directTouchSink = object : DirectTouchHold.Touch {

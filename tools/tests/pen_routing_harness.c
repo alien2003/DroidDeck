@@ -241,7 +241,7 @@ static void switch_between_strokes(void) {
     assert(nevents == 1 && events[0].kind == RELEASE && events[0].value == BTN_LEFT && g_pen.route == PEN_ROUTE_NONE);
 }
 
-static void tablet_leaves_the_pointer_alone(void) {
+static void tablet_moves_the_pointer_where_the_pen_leaves(void) {
     atomic_store(&g_pen_caps, 3);
     tablet_taker = &client_b;
     atomic_store(&g_cursor_composite, 1);
@@ -261,11 +261,22 @@ static void tablet_leaves_the_pointer_alone(void) {
     assert(last_pen.x != (int)last_pen.x);
     assert(last_pen.pressure == 65535 && last_pen.distance == 65535 && !last_pen.has_tilt && !last_pen.down);
     assert(last_pen.buttons == DROIDDECK_PEN_RIGHT && last_pen.time_ms == UINT32_MAX);
-    pen(0, 1600);
-    assert(nevents == 1);
-    expect(0, OUT, NULL, NULL);
     assert(g_ptr_x == 123 && g_ptr_y == 45 && !g_ptr_known && !renders && !motions && !g_grab && !g_key_target);
     assert(g_raw_valid && g_raw_x == 7 && g_raw_y == 8 && !g_ptrs[0].focus && !g_ptrs[1].focus);
+    pen(0, 1600);
+    assert(nevents == 2 && motions == 1 && renders == 1);
+    expect(0, OUT, NULL, NULL);
+    expect(1, ENTER, &pointer_b, &surface_b);
+    assert(g_ptr_x == scene_x(1600.5) && g_ptr_y == 125 && g_ptr_known && !g_raw_valid && !g_grab && !g_key_target);
+    pen(0, 500);
+    assert(nevents == 0 && motions == 1 && g_ptr_x == scene_x(1600.5));
+    struct constraint lock = {1, &b};
+    g_active_constraint = &lock;
+    pen(T, 1700);
+    assert(nevents == 1 && g_pen.route == PEN_ROUTE_TABLET);
+    pen(0, 1700);
+    assert(nevents == 1 && motions == 1 && g_ptr_x == scene_x(1600.5));
+    expect(0, OUT, NULL, NULL);
 }
 
 static void target_order(void) {
@@ -375,7 +386,7 @@ static void gamescope_takes_the_pointer(void) {
 int main(int argc, char **argv) {
     static const struct { const char *name; void (*run)(void); } cases[] = {
         {"frozen", frozen}, {"notablet", no_tablet_client}, {"switch", switch_between_strokes},
-        {"pointer", tablet_leaves_the_pointer_alone}, {"target", target_order},
+        {"pointer", tablet_moves_the_pointer_where_the_pen_leaves}, {"target", target_order},
         {"orphan", surface_gone_orphans_the_stroke}, {"query", query_reports_route_and_tablet_focus},
         {"gamescope", gamescope_takes_the_pointer},
     };
