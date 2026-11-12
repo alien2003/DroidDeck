@@ -126,6 +126,9 @@ static int log_budget(void) {
 #ifndef BTN_RIGHT
 #define BTN_RIGHT 0x111
 #endif
+#ifndef BTN_MIDDLE
+#define BTN_MIDDLE 0x112
+#endif
 
 #define INPUT_SPACE_W 1920
 #define INPUT_SPACE_H 1080
@@ -581,13 +584,28 @@ int droiddeck_cursor_snapshot(int *out, int cap) {
 }
 struct active_touch { struct surface *surface; int pointer_fallback; };
 static struct active_touch g_touch_points[MAX_TOUCH_POINTS];
+#define PEN_IN (1 << 0)
+#define PEN_TIP (1 << 1)
+#define PEN_ERASER (1 << 2)
+#define PEN_RIGHT (1 << 3)
+#define PEN_MIDDLE (1 << 4)
+#define PEN_TABLET (1 << 5)
+#define PEN_CANCEL (1 << 6)
+#define PEN_TILT (1 << 7)
+#define PEN_BIT(button) (1 << ((button) - BTN_LEFT))
+struct pen_state { int in; int buttons; double x, y; };
+static struct pen_state g_pen;
+static atomic_int g_pen_caps;
 static void touch_cancel_surface(struct surface *surface);
 static struct surface *g_grab;
 static void publish_query_state(void);
 static struct surface *g_key_target;
 static struct surface *g_ime_click;
 static int g_input_pipe[2] = {-1, -1};
-struct input_msg { int type; int p1; int p2; int p3; int p4; };
+struct input_msg { int type; int p1; int p2; int p3; int p4; int p5; int p6; int p7; int p8; };
+static pthread_mutex_t g_pen_spill_lock = PTHREAD_MUTEX_INITIALIZER;
+static struct input_msg g_pen_spill;
+static atomic_int g_pen_spill_pending;
 
 struct surface;
 static void constraints_surface_gone(struct surface *s);
@@ -3243,14 +3261,14 @@ static void deliver_pointer(const struct input_msg *m) {
     pointer_event(x, y, m->p1 == 1 ? 0 : BTN_LEFT, m->p1 == 0);
 }
 
-static void input_output_to_scene(int px, int py, double *x, double *y) {
+static void input_output_to_scene(double px, double py, double *x, double *y) {
     int w, h, ow, oh;
     scene_size(&w, &h);
     vkp_output_size(&ow, &oh);
     if (ow <= 0 || oh <= 0 ||
-        !vkp_output_to_scene((double)px * ow / INPUT_SPACE_W, (double)py * oh / INPUT_SPACE_H, x, y)) {
-        *x = (double)px * w / INPUT_SPACE_W;
-        *y = (double)py * h / INPUT_SPACE_H;
+        !vkp_output_to_scene(px * ow / INPUT_SPACE_W, py * oh / INPUT_SPACE_H, x, y)) {
+        *x = px * w / INPUT_SPACE_W;
+        *y = py * h / INPUT_SPACE_H;
     }
     if (*x < 0) *x = 0;
     if (*y < 0) *y = 0;
@@ -3479,6 +3497,55 @@ static void deliver_touch(const struct input_msg *m) {
     publish_query_state();
 }
 
+static void pen_log_target(void) {
+    static struct wl_client *said;
+    for (int i = 0; i < g_nptrs; i++) {
+        if (!g_ptrs[i].focus) continue;
+        struct wl_client *client = wl_resource_get_client(g_ptrs[i].focus);
+        if (client != said && log_budget()) {
+            char name[160];
+            describe(wl_resource_get_user_data(g_ptrs[i].focus), name, sizeof(name));
+            droiddeck_log("pen", "%s gets the pen as the pointer", name);
+        }
+        said = client;
+        return;
+    }
+}
+
+static int pen_buttons(int flags) {
+    int held = 0;
+    if (flags & PEN_TIP) held |= PEN_BIT(flags & PEN_ERASER ? BTN_RIGHT : BTN_LEFT);
+    if (flags & PEN_RIGHT) held |= PEN_BIT(BTN_RIGHT);
+    if (flags & PEN_MIDDLE) held |= PEN_BIT(BTN_MIDDLE);
+    return held;
+}
+
+static void pen_release(int buttons) {
+    for (uint32_t button = BTN_LEFT; button <= BTN_MIDDLE; button++)
+        if (buttons & PEN_BIT(button)) pointer_button(button, 0);
+}
+
+static void deliver_pen(const struct input_msg *m) {
+    if (!(m->p1 & PEN_IN) || (m->p1 & PEN_CANCEL)) {
+        pen_release(g_pen.buttons);
+        if (g_pen.in) g_raw_valid = 0;
+        memset(&g_pen, 0, sizeof(g_pen));
+        return;
+    }
+    int held = pen_buttons(m->p1);
+    if (!g_pen.in) g_raw_valid = 0;
+    g_pen.in = 1;
+    input_output_to_scene(m->p2 / 256.0, m->p3 / 256.0, &g_pen.x, &g_pen.y);
+    if (!(g_active_constraint && g_active_constraint->is_lock)) pointer_event(g_pen.x, g_pen.y, 0, 0);
+    for (uint32_t button = BTN_LEFT; button <= BTN_MIDDLE; button++)
+        if (held & ~g_pen.buttons & PEN_BIT(button)) pointer_button(button, 1);
+    struct surface *grab = g_grab;
+    pen_release(g_pen.buttons & ~held);
+    if (held) g_grab = grab;
+    g_pen.buttons = held;
+    pen_log_target();
+}
+
 static void key_event(uint32_t evdev, int pressed);
 struct wl_resource *droiddeck_ime_target(void);
 static void deliver_key(const struct input_msg *m) {
@@ -3630,11 +3697,19 @@ static int on_input_readable(int fd, uint32_t mask, void *data) {
         case 10: break;
         case 11: axis_event(m.p1, m.p2, 0); break;
         case 12: axis_event(m.p1, m.p2, 1); break;
+        case 13: deliver_pen(&m); break;
+        case 14: break;
         case 20: stream_take(); break;
         case 21: if (!m.p1) stream_forget_all(); schedule_render(); break;
         case 22: schedule_render(); break;
         default: deliver_pointer(&m); break;
         }
+    }
+    if (atomic_exchange(&g_pen_spill_pending, 0)) {
+        pthread_mutex_lock(&g_pen_spill_lock);
+        m = g_pen_spill;
+        pthread_mutex_unlock(&g_pen_spill_lock);
+        deliver_pen(&m);
     }
     if (atomic_exchange(&g_output_refresh_pending, 0) &&
             atomic_load(&g_output_refresh_mhz) != g_output_announced_refresh_mhz) {
@@ -3665,6 +3740,28 @@ void droiddeck_wayland_send_pointer(int action, int x, int y) {
 void droiddeck_wayland_send_touch(int action, int pointer_id, int x, int y) {
     if (g_input_pipe[1] < 0) return;
     struct input_msg m = { 7, action, pointer_id, x, y };
+    ssize_t n = write(g_input_pipe[1], &m, sizeof(m));
+    (void)n;
+}
+
+void droiddeck_wayland_send_pen(int flags, int x, int y, int pressure, int distance, int tilt_x, int tilt_y,
+                                int time_ms) {
+    if (g_input_pipe[1] < 0) return;
+    struct input_msg m = { 13, flags, x, y, pressure, distance, tilt_x, tilt_y, time_ms };
+    pthread_mutex_lock(&g_pen_spill_lock);
+    g_pen_spill = m;
+    pthread_mutex_unlock(&g_pen_spill_lock);
+    if (write(g_input_pipe[1], &m, sizeof(m)) == (ssize_t)sizeof(m)) return;
+    atomic_store(&g_pen_spill_pending, 1);
+    /* Written again after the flag so the pipe is non-empty and the reader comes back for the spill. */
+    ssize_t n = write(g_input_pipe[1], &m, sizeof(m));
+    (void)n;
+}
+
+void droiddeck_wayland_send_pen_capabilities(int caps) {
+    atomic_fetch_or(&g_pen_caps, caps);
+    if (g_input_pipe[1] < 0) return;
+    struct input_msg m = { 14, caps, 0, 0, 0 };
     ssize_t n = write(g_input_pipe[1], &m, sizeof(m));
     (void)n;
 }
@@ -3953,6 +4050,7 @@ int droiddeck_wayland_run(void) {
 
     g_display = display;
     if (pipe2(g_input_pipe, O_CLOEXEC | O_NONBLOCK) == 0) {
+        fcntl(g_input_pipe[1], F_SETPIPE_SZ, 1 << 20);
         wl_event_loop_add_fd(wl_display_get_event_loop(display), g_input_pipe[0],
                              WL_EVENT_READABLE, on_input_readable, NULL);
     } else {
