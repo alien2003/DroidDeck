@@ -328,8 +328,16 @@ tablet handling (Ubuntu `0006`/`0007`, Arch `0005`/`0006`).
 - **Programs without tablet input.** KWin delivers tablet events only to clients that bound tablet-v2.
   `droiddeck-desktop` also exports `KWIN_WAYLAND_EMULATE_TABLET=1`, so KWin turns pen input into pointer input for
   the rest (SDL and GLFW programs, Wine on Wayland); that emulation drops side buttons, and Mouse mode is the answer
-  for those programs. X11 programs need nothing: Xwayland binds tablet-v2 and creates
+  for those programs. X11 programs get the pen from Xwayland, which binds tablet-v2 and creates
   `xwayland-tablet stylus/eraser` devices attached to the core pointer.
+- **Xwayland.** Ubuntu's Xwayland 24.1.10 has a regression: tablet events go to the root window unless the
+  `wl_pointer` is over an X11 surface, so X11 programs get only raw events. Upstream fixed it in 24.1.11
+  (03228e00 and 0ca92fb4), which the runtime carries as `tools/ubuntu/patches/xwayland/0001-0002` until Ubuntu
+  ships it. Separately, Xwayland never shows the X11 window's cursor for a tablet tool: the server sets the cursor
+  through the master pointer, which Xwayland ignores, and the tablet slave then sees no change. Patch 0003
+  invalidates the master's sprite on tablet `proximity_in`, as Xwayland already does on pointer enter. On the
+  device, Kate under X11 shows the arrow and the I-beam for the pen, takes the caret, a selection and the
+  side-button menu, and `xinput test-xi2` gets `Motion` and `ButtonPress` from the tablet device.
 - **KWin's tablet fixes.** A side button is followed by a `frame`, so clients apply it at once; a tool at (0,0)
   keeps its focus; the tip release goes to the window that got the press before focus moves; a tool that moves onto
   a title bar, an internal window or the empty desktop leaves the client surface, and one that comes back gets
@@ -417,6 +425,8 @@ On the device (validation report below):
 - **KWin tablet bugs.** KWin 6.6 and 6.8 have open tablet fixes upstream (merge requests 9785 and 9883). DroidDeck
   carries its own minimal fixes for the cases the pen hits; they need a rebase when those merge requests land. The
   host never sends a down or a button without its release.
+- **Xwayland patches.** The runtime rebuilds Xwayland until Ubuntu ships 24.1.11; patch 0003 is DroidDeck's own
+  and is not upstream yet.
 - **Programs without tablet-v2 in the desktop** depend on KWin's deprecated emulation, which drops side buttons.
   Mouse mode is the workaround.
 - **Hover cursor cost**: KWin repaints its output while a pen hovers.
