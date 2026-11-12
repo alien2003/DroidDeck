@@ -31,6 +31,7 @@ extern int  droiddeck_cursor_serial(void);
 extern int droiddeck_hud_frame_times(float *out, int len, int64_t *total);
 extern void droiddeck_wayland_send_key(int evdev, int state);
 extern int  droiddeck_focus_takes_touch(void);
+extern int  droiddeck_pen_route(void);
 extern int  droiddeck_cursor_input_pos(int *x, int *y);
 extern void droiddeck_wayland_send_scene_input(int type, int a, int b);
 extern void droiddeck_wayland_set_cursor_composite(int on);
@@ -345,6 +346,13 @@ Java_com_droiddeck_launcher_wayland_WaylandCompositor_nativeFocusTakesTouch(
         JNIEnv *env, jclass clazz) {
     (void)env; (void)clazz;
     return droiddeck_focus_takes_touch() ? JNI_TRUE : JNI_FALSE;
+}
+
+JNIEXPORT jint JNICALL
+Java_com_droiddeck_launcher_wayland_WaylandCompositor_nativePenRoute(
+        JNIEnv *env, jclass clazz) {
+    (void)env; (void)clazz;
+    return droiddeck_pen_route();
 }
 
 JNIEXPORT jboolean JNICALL

@@ -129,6 +129,12 @@ static int log_budget(void) {
 #ifndef BTN_MIDDLE
 #define BTN_MIDDLE 0x112
 #endif
+#ifndef BTN_TOOL_PEN
+#define BTN_TOOL_PEN 0x140
+#endif
+#ifndef BTN_TOOL_RUBBER
+#define BTN_TOOL_RUBBER 0x141
+#endif
 
 #define INPUT_SPACE_W 1920
 #define INPUT_SPACE_H 1080
@@ -593,8 +599,10 @@ static struct active_touch g_touch_points[MAX_TOUCH_POINTS];
 #define PEN_CANCEL (1 << 6)
 #define PEN_TILT (1 << 7)
 #define PEN_BIT(button) (1 << ((button) - BTN_LEFT))
-struct pen_state { int in; int buttons; double x, y; };
+enum pen_route { PEN_ROUTE_NONE, PEN_ROUTE_POINTER, PEN_ROUTE_TABLET };
+struct pen_state { int in; int buttons; double x, y; int route, stroke; struct surface *target, *grab; };
 static struct pen_state g_pen;
+static struct { int seen, route; double x, y; } g_pen_report;
 static atomic_int g_pen_caps;
 static void touch_cancel_surface(struct surface *surface);
 static struct surface *g_grab;
@@ -1265,14 +1273,14 @@ static void surface_commit(struct wl_client *c, struct wl_resource *r) {
         s->pending_attach = 0;
 
         surface_drop_idle(s);
-        if (s->role == ROLE_CURSOR) {
+        if (s->role == ROLE_CURSOR && s == g_cursor_surface) {
             if (!buffer) {
                 cursor_publish_hidden();
             } else {
                 cursor_publish_buffer(s, buffer);
                 send_buffer_release(buffer);
             }
-        } else if (s->role == ROLE_NONE) {
+        } else if (s->role == ROLE_NONE || s->role == ROLE_CURSOR) {
             if (buffer) surface_hold_idle(s, buffer);
         } else if (db) {
             buf_trace_attach(buffer);
@@ -1357,7 +1365,10 @@ static void surface_resource_destroy(struct wl_resource *r) {
     if (g_grab == s) g_grab = NULL;
     if (g_key_target == s) g_key_target = NULL;
     if (g_ime_click == s) g_ime_click = NULL;
+    if (g_pen.target == s) g_pen.target = NULL;
+    if (g_pen.grab == s) g_pen.grab = NULL;
     droiddeck_text_input_surface_gone(r);
+    droiddeck_tablet_surface_gone(r);
     if (g_desktop == s) { g_desktop = NULL; droiddeck_log("desktop", "the desktop closed"); }
     if (g_hud_surface == s) { g_hud_surface = NULL; droiddeck_on_game_surface(NULL, NULL); }
     if (g_hud_shm == s) g_hud_shm = NULL;
@@ -2515,6 +2526,12 @@ static uint32_t now_ms(void) {
     return (uint32_t)(ts.tv_sec * 1000 + ts.tv_nsec / 1000000);
 }
 
+static int cursor_take_role(struct surface *s) {
+    if (s->role != ROLE_NONE && s->role != ROLE_CURSOR) return 0;
+    s->role = ROLE_CURSOR;
+    return 1;
+}
+
 static void pointer_set_cursor(struct wl_client *c, struct wl_resource *r, uint32_t serial,
                                struct wl_resource *surface, int32_t hx, int32_t hy) {
     if (!surface) {
@@ -2525,9 +2542,7 @@ static void pointer_set_cursor(struct wl_client *c, struct wl_resource *r, uint3
         return;
     }
     struct surface *s = wl_resource_get_user_data(surface);
-    if (!s) return;
-    if (s->role != ROLE_NONE && s->role != ROLE_CURSOR) return;
-    s->role = ROLE_CURSOR;
+    if (!s || !cursor_take_role(s)) return;
     g_cursor_surface = s;
     pthread_mutex_lock(&g_cursor_lock);
     g_cursor_hx = hx;
@@ -2544,6 +2559,20 @@ static void pointer_set_cursor(struct wl_client *c, struct wl_resource *r, uint3
         g_cursor_shown = s;
     }
     if (atomic_load(&g_cursor_composite)) schedule_render();
+}
+
+void droiddeck_cursor_from_tool(struct wl_resource *surface, int32_t hx, int32_t hy) {
+    static int said_role, said_cursor;
+    struct surface *s = surface ? wl_resource_get_user_data(surface) : NULL;
+    if (!s) return;
+    const char *program = client_name(wl_resource_get_client(surface));
+    if (!cursor_take_role(s)) {
+        if (!said_role) droiddeck_log("pen", "%s asked for a pen cursor on a surface that is already something else; ignored", program);
+        said_role = 1;
+        return;
+    }
+    if (!said_cursor) droiddeck_log("pen", "%s set its own pen cursor; DroidDeck does not draw pen cursors yet", program);
+    said_cursor = 1;
 }
 static void pointer_release(struct wl_client *c, struct wl_resource *r) { wl_resource_destroy(r); }
 static const struct wl_pointer_interface pointer_impl = {
@@ -3338,13 +3367,25 @@ static struct surface *touch_target_at(double x, double y) {
     return g_grab ? g_grab : g_key_target;
 }
 
+static struct surface *pen_target_at(double x, double y) {
+    if (g_active_constraint) return g_active_constraint->surface;
+    if (g_desktop) return g_desktop;
+    return g_grab ? g_grab : toplevel_at(x, y);
+}
+
+/* SDL2 in gamescope's SDL backend binds tablet-v2 but turns it into mouse input, and gamescope hands that
+ * motion to a game holding a pointer lock as relative camera motion. */
+static int pen_tablet_refused(struct wl_client *client) { return !strcmp(client_name(client), "gamescope"); }
+
 static pthread_mutex_t g_query_lock = PTHREAD_MUTEX_INITIALIZER;
 struct query_snapshot {
     int has_position;
     int input_x, input_y;
     int focus_takes_touch;
+    int pen_route;
+    int focus_takes_tablet;
 };
-static struct query_snapshot g_query = { 0, 0, 0, 1 };
+static struct query_snapshot g_query = { 0, 0, 0, 1, PEN_ROUTE_NONE, 0 };
 
 static void publish_query_state(void) {
     struct surface *target = g_key_target ? g_key_target : (g_grab ? g_grab : toplevel_at(g_ptr_x, g_ptr_y));
@@ -3355,6 +3396,10 @@ static void publish_query_state(void) {
         takes_touch = 0;
         for_each_touch_of(client, st) takes_touch = 1;
     }
+    struct surface *pen_focus = !g_pen_report.seen ? target
+                              : g_pen.target ? g_pen.target : pen_target_at(g_pen_report.x, g_pen_report.y);
+    struct wl_client *pen_client = pen_focus ? wl_resource_get_client(pen_focus->resource) : NULL;
+    int takes_tablet = pen_client && droiddeck_tablet_client_bound(pen_client) && !pen_tablet_refused(pen_client);
     int w = 0, h = 0, ow = 0, oh = 0, input_x = 0, input_y = 0, has_position = 0;
     scene_size(&w, &h);
     vkp_output_size(&ow, &oh);
@@ -3374,6 +3419,8 @@ static void publish_query_state(void) {
     g_query.has_position = has_position;
     g_query.input_x = input_x;
     g_query.input_y = input_y;
+    g_query.pen_route = g_pen_report.route;
+    g_query.focus_takes_tablet = takes_tablet;
     pthread_mutex_unlock(&g_query_lock);
 }
 
@@ -3382,6 +3429,13 @@ int droiddeck_focus_takes_touch(void) {
     int takes_touch = g_query.focus_takes_touch;
     pthread_mutex_unlock(&g_query_lock);
     return takes_touch;
+}
+
+int droiddeck_pen_route(void) {
+    pthread_mutex_lock(&g_query_lock);
+    int takes_tablet = g_query.focus_takes_tablet;
+    pthread_mutex_unlock(&g_query_lock);
+    return takes_tablet ? PEN_ROUTE_TABLET : PEN_ROUTE_POINTER;
 }
 
 int droiddeck_cursor_input_pos(int *x, int *y) {
@@ -3499,17 +3553,19 @@ static void deliver_touch(const struct input_msg *m) {
 
 static void pen_log_target(void) {
     static struct wl_client *said;
-    for (int i = 0; i < g_nptrs; i++) {
-        if (!g_ptrs[i].focus) continue;
-        struct wl_client *client = wl_resource_get_client(g_ptrs[i].focus);
-        if (client != said && log_budget()) {
-            char name[160];
-            describe(wl_resource_get_user_data(g_ptrs[i].focus), name, sizeof(name));
-            droiddeck_log("pen", "%s gets the pen as the pointer", name);
-        }
-        said = client;
-        return;
+    static int said_route;
+    struct surface *target = g_pen.route == PEN_ROUTE_TABLET ? g_pen.target : NULL;
+    for (int i = 0; !target && g_pen.route == PEN_ROUTE_POINTER && i < g_nptrs; i++)
+        if (g_ptrs[i].focus) target = wl_resource_get_user_data(g_ptrs[i].focus);
+    if (!target) return;
+    struct wl_client *client = wl_resource_get_client(target->resource);
+    if ((client != said || g_pen.route != said_route) && log_budget()) {
+        char name[160];
+        describe(target, name, sizeof(name));
+        droiddeck_log("pen", "%s gets the pen as %s", name, g_pen.route == PEN_ROUTE_TABLET ? "a tablet" : "the pointer");
     }
+    said = client;
+    said_route = g_pen.route;
 }
 
 static int pen_buttons(int flags) {
@@ -3525,25 +3581,81 @@ static void pen_release(int buttons) {
         if (buttons & PEN_BIT(button)) pointer_button(button, 0);
 }
 
-static void deliver_pen(const struct input_msg *m) {
-    if (!(m->p1 & PEN_IN) || (m->p1 & PEN_CANCEL)) {
+static void pen_end_route(uint32_t time_ms) {
+    if (g_pen.route == PEN_ROUTE_TABLET) droiddeck_tablet_out(time_ms);
+    if (g_pen.route == PEN_ROUTE_POINTER) {
         pen_release(g_pen.buttons);
-        if (g_pen.in) g_raw_valid = 0;
-        memset(&g_pen, 0, sizeof(g_pen));
-        return;
+        g_pen.buttons = 0;
+        g_raw_valid = 0;
     }
+    g_pen.route = PEN_ROUTE_NONE;
+}
+
+static void pen_pointer(const struct input_msg *m) {
     int held = pen_buttons(m->p1);
-    if (!g_pen.in) g_raw_valid = 0;
-    g_pen.in = 1;
-    input_output_to_scene(m->p2 / 256.0, m->p3 / 256.0, &g_pen.x, &g_pen.y);
     if (!(g_active_constraint && g_active_constraint->is_lock)) pointer_event(g_pen.x, g_pen.y, 0, 0);
     for (uint32_t button = BTN_LEFT; button <= BTN_MIDDLE; button++)
         if (held & ~g_pen.buttons & PEN_BIT(button)) pointer_button(button, 1);
-    struct surface *grab = g_grab;
+    g_pen.grab = g_grab;
     pen_release(g_pen.buttons & ~held);
-    if (held) g_grab = grab;
+    if (held) g_grab = g_pen.grab;
     g_pen.buttons = held;
+}
+
+static uint32_t pen_axis(int value) { return value < 0 ? 0 : value > 65535 ? 65535 : (uint32_t)value; }
+
+static void pen_tablet(const struct input_msg *m, int tool) {
+    struct surface *target = g_pen.target;
+    if (!target) return;
+    int tx = 0, ty = 0;
+    if (target != g_desktop && target->placed) { tx = target->x; ty = target->y; }
+    struct droiddeck_pen pen = {
+        .tool = tool, .x = g_pen.x - tx, .y = g_pen.y - ty,
+        .pressure = pen_axis(m->p4), .distance = pen_axis(m->p5),
+        .has_tilt = (m->p1 & PEN_TILT) != 0, .tilt_x = m->p6 / 100.0, .tilt_y = m->p7 / 100.0,
+        .down = (m->p1 & PEN_TIP) != 0,
+        .buttons = (m->p1 & PEN_RIGHT ? DROIDDECK_PEN_RIGHT : 0) | (m->p1 & PEN_MIDDLE ? DROIDDECK_PEN_MIDDLE : 0),
+        .time_ms = (uint32_t)m->p8,
+    };
+    droiddeck_tablet_frame(target->resource, &pen);
+}
+
+static void deliver_pen(const struct input_msg *m) {
+    const uint32_t time_ms = (uint32_t)m->p8;
+    if (!(m->p1 & PEN_IN) || (m->p1 & PEN_CANCEL)) {
+        pen_end_route(time_ms);
+        memset(&g_pen, 0, sizeof(g_pen));
+        publish_query_state();
+        return;
+    }
+    const int tool = m->p1 & PEN_ERASER ? BTN_TOOL_RUBBER : BTN_TOOL_PEN;
+    g_pen.in = 1;
+    input_output_to_scene(m->p2 / 256.0, m->p3 / 256.0, &g_pen.x, &g_pen.y);
+    if (!g_pen.stroke) {
+        if (m->p1 & PEN_TABLET) {
+            droiddeck_tablet_set_capabilities(atomic_load(&g_pen_caps));
+            droiddeck_tablet_ensure_tool(tool);
+        }
+        struct surface *target = pen_target_at(g_pen.x, g_pen.y);
+        struct wl_client *client = target ? wl_resource_get_client(target->resource) : NULL;
+        int route = client && (m->p1 & PEN_TABLET) && droiddeck_tablet_client_has_tool(client, tool) &&
+                    !pen_tablet_refused(client) ? PEN_ROUTE_TABLET : PEN_ROUTE_POINTER;
+        if (route != g_pen.route) {
+            pen_end_route(time_ms);
+            if (route == PEN_ROUTE_POINTER) g_raw_valid = 0;
+        }
+        g_pen.route = route;
+        g_pen.target = target;
+    }
+    g_pen.stroke = (m->p1 & (PEN_TIP | PEN_RIGHT | PEN_MIDDLE)) != 0;
+    if (g_pen.route == PEN_ROUTE_TABLET) pen_tablet(m, tool);
+    else pen_pointer(m);
+    g_pen_report.seen = 1;
+    g_pen_report.route = g_pen.route;
+    g_pen_report.x = g_pen.x;
+    g_pen_report.y = g_pen.y;
     pen_log_target();
+    publish_query_state();
 }
 
 static void key_event(uint32_t evdev, int pressed);
@@ -3698,7 +3810,7 @@ static int on_input_readable(int fd, uint32_t mask, void *data) {
         case 11: axis_event(m.p1, m.p2, 0); break;
         case 12: axis_event(m.p1, m.p2, 1); break;
         case 13: deliver_pen(&m); break;
-        case 14: break;
+        case 14: droiddeck_tablet_set_capabilities(atomic_load(&g_pen_caps)); break;
         case 20: stream_take(); break;
         case 21: if (!m.p1) stream_forget_all(); schedule_render(); break;
         case 22: schedule_render(); break;
@@ -3711,6 +3823,7 @@ static int on_input_readable(int fd, uint32_t mask, void *data) {
         pthread_mutex_unlock(&g_pen_spill_lock);
         deliver_pen(&m);
     }
+    if (droiddeck_tablet_pending_flush()) wl_display_flush_clients(g_display);
     if (atomic_exchange(&g_output_refresh_pending, 0) &&
             atomic_load(&g_output_refresh_mhz) != g_output_announced_refresh_mhz) {
         output_notify_mode();
@@ -4056,6 +4169,7 @@ int droiddeck_wayland_run(void) {
     } else {
         WLOGE("input pipe creation failed");
     }
+    droiddeck_tablet_set_capabilities(atomic_load(&g_pen_caps));
     start_test_input(wl_display_get_event_loop(display));
     if ((g_stats_timer = wl_event_loop_add_timer(wl_display_get_event_loop(display), on_stats_timer, NULL)))
         wl_event_source_timer_update(g_stats_timer, 10000);

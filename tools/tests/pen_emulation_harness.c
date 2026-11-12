@@ -1,4 +1,5 @@
 #include <assert.h>
+#include <stdatomic.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
@@ -6,17 +7,22 @@
 #define BTN_LEFT 0x110
 #define BTN_RIGHT 0x111
 #define BTN_MIDDLE 0x112
+#define BTN_TOOL_PEN 0x140
+#define BTN_TOOL_RUBBER 0x141
 #define INPUT_SPACE_W 1920
 #define INPUT_SPACE_H 1080
 #include "input_msg.inc"
 #include "pen_state.inc"
+#include "pen_api.inc"
 
 enum { MOTION, PRESS, RELEASE };
 struct event { int kind; uint32_t button; double x, y; int raw_valid; };
 struct constraint { int is_lock; };
 static struct constraint *g_active_constraint;
-struct surface;
-static struct surface *g_grab;
+struct wl_client;
+struct wl_resource;
+struct surface { struct wl_resource *resource; int placed, x, y; };
+static struct surface *g_grab, *g_desktop;
 static int g_raw_valid;
 static struct event events[16];
 static int nevents, logs;
@@ -42,6 +48,18 @@ static void pointer_button(uint32_t button, int pressed) {
     events[nevents++] = (struct event){pressed ? PRESS : RELEASE, button, 0, 0, g_raw_valid};
 }
 static void pen_log_target(void) { logs++; }
+static struct surface *pen_target_at(double x, double y) { (void)x; (void)y; return NULL; }
+static int pen_tablet_refused(struct wl_client *client) { (void)client; return 0; }
+static void publish_query_state(void) {}
+static struct wl_client *wl_resource_get_client(struct wl_resource *r) { (void)r; return NULL; }
+static void droiddeck_tablet_set_capabilities(int caps) { (void)caps; }
+static void droiddeck_tablet_ensure_tool(int tool) { (void)tool; }
+static int droiddeck_tablet_client_has_tool(struct wl_client *client, int tool) { (void)client; (void)tool; return 0; }
+static void droiddeck_tablet_frame(struct wl_resource *surface, const struct droiddeck_pen *pen) {
+    (void)surface; (void)pen;
+    assert(0);
+}
+static void droiddeck_tablet_out(uint32_t time_ms) { (void)time_ms; }
 #include "pen.inc"
 
 static void pen(int flags, double x, double y) {

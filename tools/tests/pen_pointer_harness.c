@@ -7,6 +7,8 @@
 #define BTN_LEFT 0x110
 #define BTN_RIGHT 0x111
 #define BTN_MIDDLE 0x112
+#define BTN_TOOL_PEN 0x140
+#define BTN_TOOL_RUBBER 0x141
 #define INPUT_SPACE_W 1920
 #define INPUT_SPACE_H 1080
 #define WL_POINTER_FRAME_SINCE_VERSION 5
@@ -14,6 +16,7 @@
 #define WL_POINTER_BUTTON_STATE_PRESSED 1
 #include "input_msg.inc"
 #include "pen_state.inc"
+#include "pen_api.inc"
 
 typedef int32_t wl_fixed_t;
 struct wl_client { int id; };
@@ -64,7 +67,14 @@ static void constraints_focus_entered(struct wl_resource *target, struct wl_clie
 }
 static void droiddeck_text_input_refocus(void) {}
 static void pen_log_target(void) {}
-static void wl_display_flush_clients(struct wl_display *display) { (void)display; }
+static struct surface *dying;
+static void wl_display_flush_clients(struct wl_display *display) {
+    (void)display;
+    if (!dying || !nevents || events[nevents - 1].kind != RELEASE) return;
+    if (g_grab == dying) g_grab = NULL;
+    if (g_pen.grab == dying) g_pen.grab = NULL;
+    dying = NULL;
+}
 static uint32_t now_ms(void) { return 0; }
 static uint32_t wl_display_next_serial(struct wl_display *display) { (void)display; return 0; }
 static int wl_resource_get_version(struct wl_resource *r) { (void)r; return 7; }
@@ -92,7 +102,17 @@ static void wl_pointer_send_button(struct wl_resource *p, uint32_t serial, uint3
     (void)serial; (void)t;
     record(state == WL_POINTER_BUTTON_STATE_PRESSED ? PRESS : RELEASE, p, NULL, button);
 }
+static void droiddeck_tablet_set_capabilities(int caps) { (void)caps; }
+static void droiddeck_tablet_ensure_tool(int tool) { (void)tool; }
+static int droiddeck_tablet_client_has_tool(struct wl_client *client, int tool) { (void)client; (void)tool; return 0; }
+static void droiddeck_tablet_frame(struct wl_resource *surface, const struct droiddeck_pen *pen) {
+    (void)surface; (void)pen;
+    assert(0);
+}
+static void droiddeck_tablet_out(uint32_t time_ms) { (void)time_ms; }
+static const char *client_name(struct wl_client *client) { (void)client; return "a program"; }
 #include "pointer.inc"
+#include "target.inc"
 #include "pen.inc"
 
 static void pen(int flags, double x) {
@@ -150,6 +170,16 @@ int main(int argc, char **argv) {
         pen(PEN_IN, 1500);
         assert(nevents == 1);
         button(0, RELEASE, BTN_RIGHT);
+    } else if (!strcmp(c, "gone")) {
+        pen(PEN_IN | PEN_TIP | PEN_RIGHT, 600);
+        assert(nevents == 1 && g_grab == &a);
+        dying = &a;
+        pen(PEN_IN | PEN_TIP, 700);
+        assert(nevents == 1 && !dying && !g_grab && !g_pen.grab);
+        button(0, RELEASE, BTN_RIGHT);
+        pen(PEN_IN, 700);
+        assert(nevents == 1);
+        button(0, RELEASE, BTN_LEFT);
     } else {
         assert(!strcmp(c, "drag"));
         pen(PEN_IN | PEN_TIP, 1500);

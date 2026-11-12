@@ -55,6 +55,7 @@ static pthread_mutex_t g_pen_spill_lock = PTHREAD_MUTEX_INITIALIZER;
 static struct input_msg g_pen_spill;
 static atomic_int g_pen_spill_pending;
 static struct input_msg last_pen;
+static int tablet_caps, tablet_pending;
 static void *g_display;
 #define WL_OUTPUT_MODE_CURRENT 1
 #define WL_OUTPUT_MODE_PREFERRED 2
@@ -77,13 +78,15 @@ static void send_toplevel_configure(struct surface *s) { (void)s; resizes++; }
 #define stream_forget_all(...) ((void)0)
 #define pointer_delta(...) ((void)0)
 #define deliver_touch(m) ((void)0)
-#define deliver_pen(m) (pens++, last_pen = *(m))
+#define deliver_pen(m) (pens++, last_pen = *(m), tablet_pending |= ((m)->p1 & 0x20) != 0)
 #define deliver_pointer(m) (pointers++)
 static void on_vsync(int64_t ns) { assert(ns > 0); ticks++; }
 static void vk_present_set_scale_mode(int mode, int alignment) {
     scale_changes++; scale_mode = mode; scale_alignment = alignment;
 }
 static void schedule_render(void) { renders++; }
+static void droiddeck_tablet_set_capabilities(int caps) { tablet_caps = caps; }
+static int droiddeck_tablet_pending_flush(void) { int pending = tablet_pending; tablet_pending = 0; return pending; }
 '''
 
 HELPERS = r'''
@@ -165,14 +168,21 @@ int main(void) {
     droiddeck_wayland_send_pen(0x83, 25728, 51200, 65535, 7, -4500, 9000, 123456);
     assert(queued() == 2 * (int)sizeof(struct input_msg) && !g_pen_spill_pending);
     drain();
-    assert(g_pen_caps == 7 && pens == 1 && pointers == 0 && flushes == 0 && !ticks);
+    assert(g_pen_caps == 7 && tablet_caps == 7 && pens == 1 && pointers == 0 && flushes == 0 && !ticks);
     assert(last_pen.type == 13 && last_pen.p1 == 0x83 && last_pen.p2 == 25728 && last_pen.p3 == 51200);
     assert(last_pen.p4 == 65535 && last_pen.p5 == 7 && last_pen.p6 == -4500 && last_pen.p7 == 9000);
     assert(last_pen.p8 == 123456);
     struct input_msg pointer = {0, 1, 10, 20};
     assert(write(g_input_pipe[1], &pointer, sizeof(pointer)) == sizeof(pointer));
     drain();
-    assert(pens == 1 && pointers == 1);
+    assert(pens == 1 && pointers == 1 && flushes == 0);
+    droiddeck_wayland_send_pen(0x21, 256, 256, 0, 0, 0, 0, 1);
+    droiddeck_wayland_send_pen(0x23, 256, 256, 0, 0, 0, 0, 2);
+    droiddeck_wayland_send_pen(0x01, 256, 256, 0, 0, 0, 0, 3);
+    drain();
+    assert(pens == 4 && flushes == 1 && !tablet_pending);
+    drain();
+    assert(pens == 4 && flushes == 1);
     close(g_input_pipe[0]); close(g_input_pipe[1]);
     puts("PASS");
 }
