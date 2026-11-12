@@ -1,0 +1,28 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: alien2003 <11610652+alien2003@users.noreply.github.com>
+Date: Thu, 12 Nov 2026 16:00:00 +0000
+Subject: [PATCH] xwayland: Show the window cursor for tablet tools
+
+A tablet tool over an X11 window gets a NULL cursor and keeps it. The
+DIX sets the window's cursor through the master pointer, which has no
+xwl_seat, so xwl_set_cursor() ignores it while miPointer records it as
+shown. The tablet device's own sprite updates then see no change, and
+xwl_seat->x_cursor stays NULL unless the mouse is over an X11 surface.
+Invalidate the sprite on proximity in, as pointer enter does, so the
+next tablet motion sets the cursor for the tool.
+---
+ hw/xwayland/xwayland-input.c | 2 ++
+ 1 file changed, 2 insertions(+)
+
+diff --git a/hw/xwayland/xwayland-input.c b/hw/xwayland/xwayland-input.c
+--- a/hw/xwayland/xwayland-input.c
++++ b/hw/xwayland/xwayland-input.c
+@@ -2170,6 +2170,8 @@ tablet_tool_proximity_in(void *data, struct zwp_tablet_tool_v2 *tool,
+ 
+     xwl_tablet_tool->proximity_in_serial = serial;
+     xwl_seat->tablet_focus_window = wl_surface_get_user_data(wl_surface);
++    if (xwl_tablet_tool->xdevice)
++        miPointerInvalidateSprite(GetMaster(xwl_tablet_tool->xdevice, POINTER_OR_FLOAT));
+ 
+     /* If there is a cursor surface frame callback pending, we need to clear it
+      * so that we can continue submitting new cursor frames.

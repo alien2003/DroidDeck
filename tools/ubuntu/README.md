@@ -21,9 +21,10 @@ Steam on the desktop). The app installs it into `files/linuxfs` and runs it unde
   a side button reaches apps at once, a pen in the top-left corner keeps its window, the tip release
   goes to the window that got the press, and a pen that moves onto a title bar or the empty desktop
   leaves the window it was over.
-- `patches/xwayland` are Olivier Fourdan's two upstream fixes from Xwayland 24.1.11 (03228e00 and
-  0ca92fb4) for Ubuntu's 24.1.10: without them an X11 window under the pen gets no pen events and no
-  cursor unless the mouse pointer is over it too.
+- `patches/xwayland`: `0001` and `0002` are Olivier Fourdan's upstream fixes from Xwayland 24.1.11
+  (03228e00 and 0ca92fb4) for Ubuntu's 24.1.10, without which an X11 window under the pen gets no pen
+  events unless the mouse pointer is over it too. `0003` gives the pen the X11 window's cursor: without
+  it Xwayland hides the cursor of a tablet tool over every X11 window.
 - The runtime's built-in Vulkan driver is DroidDeck's DD-Turnip Linux build (`DD_TURNIP_URL` and
   `DD_TURNIP_SHA256` in `base.env`): Ubuntu's Turnip is diverted to `libvulkan_freedreno.so.distrib`
   because it lacks the Adreno 8xx fixes. Zink, EGL and llvmpipe stay Ubuntu's.
