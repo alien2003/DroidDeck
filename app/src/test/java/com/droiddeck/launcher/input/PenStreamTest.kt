@@ -65,11 +65,24 @@ class PenStreamTest {
         assertEquals(32768, records.last().pressure)
     }
 
-    @Test fun hoverExitThenALaterDownLeavesProximityFirst() {
+    @Test fun hoverExitThenADownAfterTheGraceLeavesProximityFirst() {
         send(MotionEvent.ACTION_HOVER_ENTER, Sample(10, 100f))
         send(MotionEvent.ACTION_HOVER_EXIT, Sample(20, 100f))
-        send(MotionEvent.ACTION_DOWN, Sample(25, 100f, pressure = 0.5f))
-        assertEquals(listOf(PEN_IN to 10, 0 to 20, (PEN_IN or PEN_TIP) to 25), states())
+        send(MotionEvent.ACTION_DOWN, Sample(21 + PenStream.EXIT_GRACE_MS, 100f, pressure = 0.5f))
+        assertEquals(listOf(PEN_IN to 10, 0 to 20, (PEN_IN or PEN_TIP) to 71), states())
+    }
+
+    @Test fun aPenFlickeringAtTheEdgeOfHoverRangeStaysInProximity() {
+        send(MotionEvent.ACTION_HOVER_ENTER, Sample(10, 100f))
+        for (i in 0 until 5) {
+            send(MotionEvent.ACTION_HOVER_EXIT, Sample(20L + i * 22, 100f))
+            send(MotionEvent.ACTION_HOVER_ENTER, Sample(34L + i * 22, 101f))
+        }
+        send(MotionEvent.ACTION_HOVER_EXIT, Sample(130, 101f))
+        send(MotionEvent.ACTION_DOWN, Sample(130 + PenStream.EXIT_GRACE_MS, 101f, pressure = 0.5f))
+        idle()
+        assertEquals(listOf(PEN_IN to 10) + (0 until 5).map { PEN_IN to (34 + it * 22) } + listOf((PEN_IN or PEN_TIP) to 180), states())
+        assertTrue(stream.inProximity)
     }
 
     @Test fun liftingIntoHoverKeepsProximityAndLiftingAwayLeavesIt() {
@@ -173,13 +186,11 @@ class PenStreamTest {
         send(MotionEvent.ACTION_HOVER_EXIT, Sample(20, 100f))
         send(MotionEvent.ACTION_HOVER_ENTER, Sample(20 + PenStream.EXIT_GRACE_MS, 110f), tool = MotionEvent.TOOL_TYPE_ERASER)
         grace()
-        assertEquals(listOf(PEN_IN to 10, (PEN_IN or PEN_ERASER) to 50), states())
+        assertEquals(listOf(PEN_IN to 10, (PEN_IN or PEN_ERASER) to 70), states())
         records.clear()
-        send(MotionEvent.ACTION_HOVER_EXIT, Sample(60, 110f), tool = MotionEvent.TOOL_TYPE_ERASER)
-        send(MotionEvent.ACTION_HOVER_ENTER, Sample(61 + PenStream.EXIT_GRACE_MS, 110f))
-        send(MotionEvent.ACTION_HOVER_EXIT, Sample(100, 110f))
-        send(MotionEvent.ACTION_HOVER_ENTER, Sample(105, 110f))
-        assertEquals(listOf(PEN_ERASER to 60, PEN_IN to 91, 0 to 100, PEN_IN to 105), states())
+        send(MotionEvent.ACTION_HOVER_EXIT, Sample(80, 110f), tool = MotionEvent.TOOL_TYPE_ERASER)
+        send(MotionEvent.ACTION_HOVER_ENTER, Sample(81 + PenStream.EXIT_GRACE_MS, 110f))
+        assertEquals(listOf(PEN_ERASER to 80, PEN_IN to 131), states())
     }
 
     @Test fun theSideButtonSettingMapsThePrimaryButtonAndTheSecondaryGetsTheOtherClick() {

@@ -211,7 +211,10 @@ direct touches.
 - **Fingers only scroll**: as above, and whenever the pen mode is not Touch, one-finger drags scroll and finger
   taps and long presses do nothing, so a hand on the screen can never click. It takes over every touch mode except
   Off.
-- **Off**: fingers are never filtered.
+- **Off**: fingers are never filtered by the app. From Android 14 QPR2 the dispatcher itself drops fingers from
+  another device while a pen hovers over or touches the window, and a pen that comes back cancels a finger that
+  slipped in (`InputState` stylus arbitration), so on those releases Off only matters after the pen has left.
+  Measured on the Find N6 (Android 16): taps during a steady hover never reach the app.
 - **Always, whatever the setting**: `ACTION_CANCEL`, `UP` with `FLAG_CANCELED` and `POINTER_UP` with
   `FLAG_CANCELED` are Android's own palm decisions and cancel the finger stream without a click; the rest of that
   stream is dropped, because `wl_touch` cannot cancel one touch point. On-screen controls release only the
@@ -275,11 +278,13 @@ direct touches.
   from `InputSurfaceView` and `SteamTouchControls` keeps history when it rebuilds an event. No touch slop applies
   to a pen stroke.
 - **State.** `OUT → HOVER → CONTACT` per tool, tracked at the activity because the dispatcher and view groups add
-  their own hover exits. A `HOVER_EXIT` followed by `DOWN` with the same event time is not a proximity change. `UP`
+  their own hover exits. A `HOVER_EXIT` followed within 50 ms by a hover or `DOWN` is not a proximity change:
+  Android splits a landing into an exit and a down with the same time, and the OPPO digitizer flickers out and in
+  at the top of its hover range (median gap 14 ms, 214 of 227 gaps under 20 ms in one device capture). `UP`
   with `FLAG_CANCELED` or `ACTION_CANCEL` lifts the tip without a click. A pen/eraser switch, from the tool type
   or from Eraser while held, is not the pen leaving: the pen stays in proximity and its next record carries the
   other tool, so the switch does not move the pointer, bring back the cursor overlay or disarm palm rejection. A
-  `HOVER_EXIT` followed within 30 ms by a hover of the other tool is such a switch. During contact the presented
+  `HOVER_EXIT` followed within those 50 ms by a hover of the other tool is such a switch. During contact the presented
   tool is latched until the tip lifts, as Windows Pen States require for eraser buttons. Button presses are the
   difference between consecutive `buttonState`s.
 - **Bluetooth pen buttons.** A key event is a pen button when it comes from an external device whose only source is

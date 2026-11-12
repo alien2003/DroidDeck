@@ -64,7 +64,7 @@ class PenStream(private val sink: Sink) {
         expire(time)
         when (action) {
             MotionEvent.ACTION_HOVER_ENTER, MotionEvent.ACTION_HOVER_MOVE -> {
-                continueAt(time, switchesTool(event, pointer))
+                continueAt(time)
                 contact = false
                 enter(event, pointer, wantsTablet)
                 samples(event, pointer, area, width, height)
@@ -83,7 +83,7 @@ class PenStream(private val sink: Sink) {
                 samples(event, pointer, area, width, height)
             }
             MotionEvent.ACTION_DOWN, MotionEvent.ACTION_POINTER_DOWN -> if (own) {
-                continueAt(time, switchesTool(event, pointer))
+                continueAt(time)
                 enter(event, pointer, wantsTablet)
                 contact = true
                 samples(event, pointer, area, width, height)
@@ -175,12 +175,9 @@ class PenStream(private val sink: Sink) {
 
     private fun primaryHeld(): Boolean = keyDown || barrel and MotionEvent.BUTTON_STYLUS_PRIMARY != 0
 
-    private fun switchesTool(event: MotionEvent, pointer: Int): Boolean =
-        exitPending && (event.getToolType(pointer) == MotionEvent.TOOL_TYPE_ERASER) != toolEraser
-
-    private fun continueAt(time: Long, switchingTool: Boolean = false) {
+    private fun continueAt(time: Long) {
         if (!exitPending) return
-        if (time != exitTime && !(switchingTool && time - exitTime <= EXIT_GRACE_MS)) { leave(); return }
+        if (time - exitTime > EXIT_GRACE_MS) { leave(); return }
         exitPending = false
         handler.removeCallbacks(exitLater)
     }
@@ -306,7 +303,7 @@ class PenStream(private val sink: Sink) {
         const val CAP_TILT = 1 shl 1
         const val CAP_DISTANCE = 1 shl 2
         const val HOVER_TIMEOUT_MS = 2_000L
-        const val EXIT_GRACE_MS = 30L
+        const val EXIT_GRACE_MS = 50L
 
         fun capabilities(tilt: Boolean, distanceSpan: Float?): Int =
             CAP_PRESSURE or (if (tilt) CAP_TILT else 0) or (if (distanceSpan != null && distanceSpan > 1f) CAP_DISTANCE else 0)
