@@ -82,6 +82,12 @@ class PenEmulationTest(unittest.TestCase):
         self.assertEqual(flags, {'PEN_IN': '0', 'PEN_TIP': '1', 'PEN_ERASER': '2', 'PEN_RIGHT': '3',
                                  'PEN_MIDDLE': '4', 'PEN_TABLET': '5', 'PEN_CANCEL': '6', 'PEN_TILT': '7'})
 
+    def test_route_values_match_the_kotlin_cursor_policy(self):
+        self.assertIn('enum pen_route { PEN_ROUTE_NONE, PEN_ROUTE_POINTER, PEN_ROUTE_TABLET };', SOURCE.read_text())
+        policy = (REPO / 'app/src/main/java/com/droiddeck/launcher/input/PenCursorPolicy.kt').read_text()
+        self.assertIn('const val ROUTE_POINTER = 1\n', policy)
+        self.assertIn('const val ROUTE_TABLET = 2\n', policy)
+
     def test_input_pipe_is_enlarged_for_pen_sample_rates(self):
         self.assertIn('fcntl(g_input_pipe[1], F_SETPIPE_SZ, 1 << 20);', SOURCE.read_text())
 

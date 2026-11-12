@@ -5,6 +5,7 @@ import android.view.InputDevice
 import android.view.MotionEvent
 import android.view.SurfaceView
 import androidx.compose.runtime.MutableState
+import androidx.compose.ui.geometry.Offset
 import com.droiddeck.launcher.SessionActivity
 import com.droiddeck.launcher.input.PenStream.Companion.PEN_CANCEL
 import com.droiddeck.launcher.input.PenStream.Companion.PEN_IN
@@ -73,6 +74,95 @@ class SessionPenRoutingTest {
         assertTrue(activity.dispatchGenericMotionEvent(event(MotionEvent.ACTION_HOVER_MOVE, 20, pen to 600f)))
         assertEquals(listOf(Pen(PEN_IN, InputSpace.fixedX(600f, 1000), InputSpace.fixedY(300f, 600), 20)), CompositorShadow.pens)
         assertEquals(listOf(PenStream.CAP_PRESSURE), CompositorShadow.capabilities)
+    }
+
+    @Test fun aTabletPenHidesTheOverlayWithoutMovingItAndRestoresItWhenItLeaves() {
+        CompositorShadow.route = PenCursorPolicy.ROUTE_TABLET
+        showCursor(100f, 200f, fromMouse = true)
+        assertTrue(state<Boolean>("cursorVisible").value)
+        assertTrue(activity.dispatchGenericMotionEvent(event(MotionEvent.ACTION_HOVER_ENTER, 10, pen to 500f)))
+        assertTrue(activity.dispatchGenericMotionEvent(event(MotionEvent.ACTION_HOVER_MOVE, 20, pen to 520f)))
+        assertFalse(state<Boolean>("cursorVisible").value)
+        assertFalse(ReflectionHelpers.getField<Boolean>(activity, "mouseOwnsCursor"))
+        shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(300))
+        assertTrue(activity.dispatchGenericMotionEvent(event(MotionEvent.ACTION_HOVER_EXIT, 30, pen to 520f)))
+        assertFalse(state<Boolean>("cursorVisible").value)
+        assertEquals(Offset(100f, 200f), state<Offset>("cursorPos").value)
+        shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(PenStream.EXIT_GRACE_MS))
+        assertEquals(listOf(PEN_IN or PEN_TABLET, PEN_IN or PEN_TABLET, PEN_TABLET), CompositorShadow.pens.map { it.flags })
+        assertTrue(state<Boolean>("cursorVisible").value)
+        assertTrue(ReflectionHelpers.getField<Boolean>(activity, "mouseOwnsCursor"))
+        assertEquals(Offset(100f, 200f), state<Offset>("cursorPos").value)
+    }
+
+    @Test fun aTabletPenLeavesAHiddenOverlayHiddenAndACancelRestoresItToo() {
+        CompositorShadow.route = PenCursorPolicy.ROUTE_TABLET
+        activity.dispatchGenericMotionEvent(event(MotionEvent.ACTION_HOVER_MOVE, 10, pen to 500f))
+        activity.dispatchGenericMotionEvent(event(MotionEvent.ACTION_HOVER_EXIT, 20, pen to 500f))
+        shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(PenStream.EXIT_GRACE_MS))
+        assertFalse(state<Boolean>("cursorVisible").value)
+        overlay(Offset(100f, 200f), visible = true, mouseOwns = false)
+        activity.dispatchGenericMotionEvent(event(MotionEvent.ACTION_HOVER_MOVE, 30, pen to 500f))
+        assertFalse(state<Boolean>("cursorVisible").value)
+        invoke("cancelPen")
+        assertEquals(PEN_CANCEL or PEN_TABLET, CompositorShadow.pens.last().flags)
+        assertTrue(state<Boolean>("cursorVisible").value)
+        assertFalse(ReflectionHelpers.getField<Boolean>(activity, "mouseOwnsCursor"))
+    }
+
+    @Test fun aMouseRemovedOrMovedWhileATabletPenHoversIsWhatTheOverlayShowsAfterTheProximity() {
+        CompositorShadow.route = PenCursorPolicy.ROUTE_TABLET
+        fun proximity(time: Long, meanwhile: () -> Unit = {}) {
+            activity.dispatchGenericMotionEvent(event(MotionEvent.ACTION_HOVER_MOVE, time, pen to 500f))
+            assertFalse(state<Boolean>("cursorVisible").value)
+            meanwhile()
+            activity.dispatchGenericMotionEvent(event(MotionEvent.ACTION_HOVER_EXIT, time + 10, pen to 500f))
+            shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(PenStream.EXIT_GRACE_MS))
+        }
+        showCursor(100f, 200f, fromMouse = true)
+        proximity(10) { invoke("dropMouseCursor") }
+        assertFalse(state<Boolean>("cursorVisible").value)
+        assertFalse(ReflectionHelpers.getField<Boolean>(activity, "mouseOwnsCursor"))
+        proximity(10_000)
+        assertFalse(state<Boolean>("cursorVisible").value)
+        assertFalse(ReflectionHelpers.getField<Boolean>(activity, "mouseOwnsCursor"))
+        proximity(20_000) { showCursor(300f, 200f, fromMouse = true) }
+        assertTrue(state<Boolean>("cursorVisible").value)
+        assertTrue(ReflectionHelpers.getField<Boolean>(activity, "mouseOwnsCursor"))
+        assertEquals(Offset(300f, 200f), state<Offset>("cursorPos").value)
+    }
+
+    @Test fun aPenOnThePointerRouteMovesTheOverlayAndLeavesItWhereThePenWas() {
+        for ((step, case) in listOf(SessionPrefs.PEN_MOUSE to PenCursorPolicy.ROUTE_TABLET,
+            SessionPrefs.PEN_AUTO to PenCursorPolicy.ROUTE_POINTER).withIndex()) {
+            SessionPrefs.setPenMode(activity, case.first)
+            invoke("readPrefs")
+            CompositorShadow.route = case.second
+            overlay(Offset(100f, 200f), visible = false, mouseOwns = false)
+            val time = 10_000L * (step + 1)
+            activity.dispatchGenericMotionEvent(event(MotionEvent.ACTION_HOVER_MOVE, time, pen to 520f))
+            assertTrue("$case", state<Boolean>("cursorVisible").value)
+            assertTrue("$case", ReflectionHelpers.getField<Boolean>(activity, "mouseOwnsCursor"))
+            assertEquals("$case", Offset(520f, 300f), state<Offset>("cursorPos").value)
+            activity.dispatchGenericMotionEvent(event(MotionEvent.ACTION_HOVER_EXIT, time + 10, pen to 530f))
+            shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(PenStream.EXIT_GRACE_MS))
+            assertEquals("$case", 0, CompositorShadow.pens.last().flags and PEN_IN)
+            assertTrue("$case", state<Boolean>("cursorVisible").value)
+            assertEquals("$case", Offset(530f, 300f), state<Offset>("cursorPos").value)
+        }
+    }
+
+    @Test fun aPenThatCrossesFromTheTabletToThePointerRouteKeepsThePointerCursor() {
+        CompositorShadow.route = PenCursorPolicy.ROUTE_TABLET
+        activity.dispatchGenericMotionEvent(event(MotionEvent.ACTION_HOVER_MOVE, 10, pen to 500f))
+        assertFalse(state<Boolean>("cursorVisible").value)
+        CompositorShadow.route = PenCursorPolicy.ROUTE_POINTER
+        activity.dispatchGenericMotionEvent(event(MotionEvent.ACTION_HOVER_MOVE, 20, pen to 520f))
+        assertTrue(state<Boolean>("cursorVisible").value)
+        activity.dispatchGenericMotionEvent(event(MotionEvent.ACTION_HOVER_EXIT, 30, pen to 520f))
+        shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(PenStream.EXIT_GRACE_MS))
+        assertTrue(state<Boolean>("cursorVisible").value)
+        assertEquals(Offset(520f, 300f), state<Offset>("cursorPos").value)
     }
 
     @Test fun penHoverInSteamIsAMouseWithoutTheTabletWish() {
@@ -266,6 +356,17 @@ class SessionPenRoutingTest {
 
     private fun touchpad() = Pad().also { field("touchpad", TouchpadGestures(8f, it)) }
 
+    private fun showCursor(x: Float, y: Float, fromMouse: Boolean) = ReflectionHelpers.callInstanceMethod<Any?>(activity, "showCursor",
+        ReflectionHelpers.ClassParameter.from(Float::class.javaPrimitiveType, x),
+        ReflectionHelpers.ClassParameter.from(Float::class.javaPrimitiveType, y),
+        ReflectionHelpers.ClassParameter.from(Boolean::class.javaPrimitiveType, fromMouse))
+
+    private fun overlay(position: Offset, visible: Boolean, mouseOwns: Boolean) {
+        state<Offset>("cursorPos").value = position
+        state<Boolean>("cursorVisible").value = visible
+        field("mouseOwnsCursor", mouseOwns)
+    }
+
     private fun field(name: String, value: Any) = ReflectionHelpers.setField(activity, name, value)
     private fun invoke(name: String) = ReflectionHelpers.callInstanceMethod<Any?>(activity, name)
     private fun <T> state(name: String): MutableState<T> = ReflectionHelpers.getField(activity, "$name\$delegate")
@@ -280,7 +381,8 @@ class SessionPenRoutingTest {
             val capabilities = mutableListOf<Int>()
             val touches = mutableListOf<Touch>()
             val pointers = mutableListOf<Triple<Int, Int, Int>>()
-            fun clear() { pens.clear(); capabilities.clear(); touches.clear(); pointers.clear() }
+            var route = PenCursorPolicy.ROUTE_POINTER
+            fun clear() { pens.clear(); capabilities.clear(); touches.clear(); pointers.clear(); route = PenCursorPolicy.ROUTE_POINTER }
             @JvmStatic @Implementation fun __staticInitializer__() {}
             @JvmStatic @Implementation fun nativeSendPen(flags: Int, x: Int, y: Int, pressure: Int, distance: Int, tiltX: Int, tiltY: Int, timeMs: Int) {
                 pens += Pen(flags, x, y, timeMs)
@@ -291,6 +393,7 @@ class SessionPenRoutingTest {
             @JvmStatic @Implementation fun nativeSendSceneInput(type: Int, code: Int, value: Int) {}
             @JvmStatic @Implementation fun nativeSendKey(code: Int, value: Int) {}
             @JvmStatic @Implementation fun nativeFocusTakesTouch(): Boolean = false
+            @JvmStatic @Implementation fun nativePenRoute(): Int = route
         }
     }
 }

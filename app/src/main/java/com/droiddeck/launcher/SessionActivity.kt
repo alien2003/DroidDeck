@@ -97,6 +97,7 @@ import com.droiddeck.launcher.input.PadState
 import com.droiddeck.launcher.input.SteamControllerBle
 import com.droiddeck.launcher.input.DirectTouchHold
 import com.droiddeck.launcher.input.GestureTouchStreamGate
+import com.droiddeck.launcher.input.PenCursorPolicy
 import com.droiddeck.launcher.input.PenRouter
 import com.droiddeck.launcher.input.PenStream
 import com.droiddeck.launcher.input.PointerGestures
@@ -268,9 +269,12 @@ class SessionActivity : ComponentActivity(), SurfaceHolder.Callback {
     private var penRoute: PenRouter.Route? = null
     private var penTablet = false
     private var penDown = false
+    private val penCursor = PenCursorPolicy()
     private val penStream = PenStream(object : PenStream.Sink {
-        override fun sample(flags: Int, x: Int, y: Int, pressure: Int, distance: Int, tiltX: Int, tiltY: Int, timeMs: Int) =
+        override fun sample(flags: Int, x: Int, y: Int, pressure: Int, distance: Int, tiltX: Int, tiltY: Int, timeMs: Int) {
             WaylandCompositor.nativeSendPen(flags, x, y, pressure, distance, tiltX, tiltY, timeMs)
+            if (flags and PenStream.PEN_IN == 0) penCursorLeft()
+        }
         override fun capabilities(capabilities: Int) = WaylandCompositor.nativeSendPenCapabilities(capabilities)
     })
     private var keyboard: KeyboardHost? = null
@@ -3298,6 +3302,7 @@ class SessionActivity : ComponentActivity(), SurfaceHolder.Callback {
         uiHandler.removeCallbacks(cursorHide)
         mouseOwnsCursor = false
         cursorVisible = false
+        penCursor.changed(PenCursorPolicy.Overlay(visible = false, mouseOwns = false))
     }
 
     private fun moveCapturedMouse(dx: Float, dy: Float) {
@@ -3312,6 +3317,11 @@ class SessionActivity : ComponentActivity(), SurfaceHolder.Callback {
     }
 
     private fun showCursor(x: Float, y: Float, fromMouse: Boolean = false) {
+        placeCursor(x, y, fromMouse)
+        penCursor.changed(PenCursorPolicy.Overlay(cursorVisible, mouseOwnsCursor))
+    }
+
+    private fun placeCursor(x: Float, y: Float, fromMouse: Boolean) {
         cursorPos = androidx.compose.ui.geometry.Offset(x, y)
         syncClientCursor()
         mouseOwnsCursor = fromMouse
@@ -4192,8 +4202,26 @@ class SessionActivity : ComponentActivity(), SurfaceHolder.Callback {
         val area = pointerSurfaceRect() ?: return false
         val view = outputView()
         if (!penStream.onMotion(event, pen, area, view.width, view.height, penTablet)) return false
-        if (penStream.inProximity) showCursor(event.getX(pen).coerceIn(area.left, area.right), event.getY(pen).coerceIn(area.top, area.bottom), fromMouse = true)
+        if (!penStream.inProximity) return true
+        val tablet = PenCursorPolicy.tablet(penTablet, WaylandCompositor.nativePenRoute())
+        if (penCursor.followsPen(tablet, PenCursorPolicy.Overlay(cursorVisible, mouseOwnsCursor))) {
+            showCursor(event.getX(pen).coerceIn(area.left, area.right), event.getY(pen).coerceIn(area.top, area.bottom), fromMouse = true)
+        } else {
+            uiHandler.removeCallbacks(cursorResync)
+            mouseOwnsCursor = false
+            cursorVisible = false
+        }
         return true
+    }
+
+    private fun penCursorLeft() {
+        val restore = penCursor.restoreOnLeave() ?: return
+        mouseOwnsCursor = restore.mouseOwns
+        cursorVisible = restore.visible && !pointerLocked
+        if (!restore.mouseOwns && !restore.visible) return
+        cursorResyncIdle = 0
+        uiHandler.removeCallbacks(cursorResync)
+        uiHandler.post(cursorResync)
     }
 
     private val directTouchSink = object : DirectTouchHold.Touch {
@@ -4350,7 +4378,9 @@ class SessionActivity : ComponentActivity(), SurfaceHolder.Callback {
     }
 
     private fun dropMouseCursor() {
-        if (!mouseOwnsCursor || mouseAttached()) return
+        if (mouseAttached()) return
+        penCursor.mouseRemoved()
+        if (!mouseOwnsCursor) return
         mouseOwnsCursor = false
         uiHandler.removeCallbacks(cursorResync)
         cursorVisible = false
