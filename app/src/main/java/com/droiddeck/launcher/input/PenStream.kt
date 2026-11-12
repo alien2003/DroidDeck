@@ -4,6 +4,7 @@ import android.graphics.RectF
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 import android.view.InputDevice
 import android.view.KeyEvent
 import android.view.MotionEvent
@@ -17,6 +18,8 @@ class PenStream(private val sink: Sink) {
 
     private val handler = Handler(Looper.getMainLooper())
     private val exitLater = Runnable { if (exitPending) leave() }
+    private val hoverWatchdog = Runnable { checkHover() }
+    private var watching = false
     private val tilt = IntArray(2)
     private var proximity = false
     private var contact = false
@@ -162,6 +165,24 @@ class PenStream(private val sink: Sink) {
         if (proximity && !contact && time - this.time >= HOVER_TIMEOUT_MS) leave()
     }
 
+    private fun watchHover() {
+        if (watching || !proximity || contact) return
+        watching = true
+        handler.postDelayed(hoverWatchdog, HOVER_TIMEOUT_MS)
+    }
+
+    private fun checkHover() {
+        watching = false
+        if (!proximity || contact || exitPending) return
+        val silent = SystemClock.uptimeMillis() - time
+        if (silent >= HOVER_TIMEOUT_MS) {
+            leave()
+            return
+        }
+        watching = true
+        handler.postDelayed(hoverWatchdog, HOVER_TIMEOUT_MS - silent)
+    }
+
     private fun leave() {
         if (!proximity) return
         if (exitPending) time = exitTime
@@ -171,6 +192,8 @@ class PenStream(private val sink: Sink) {
 
     private fun reset() {
         handler.removeCallbacks(exitLater)
+        handler.removeCallbacks(hoverWatchdog)
+        watching = false
         proximity = false
         contact = false
         exitPending = false
@@ -192,6 +215,7 @@ class PenStream(private val sink: Sink) {
         tilted = PenAxes.tilt(event.axis(MotionEvent.AXIS_TILT, pointer, h), event.axis(MotionEvent.AXIS_ORIENTATION, pointer, h), tilt)
         time = if (h < 0) event.eventTime else event.getHistoricalEventTime(h)
         emit(state() or tiltFlag())
+        watchHover()
     }
 
     private fun place(event: MotionEvent, pointer: Int, h: Int, area: RectF, width: Int, height: Int) {

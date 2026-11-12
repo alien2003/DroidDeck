@@ -11,10 +11,12 @@ object TouchRouter {
         val scrollLayer: Boolean,
         val steamSession: Boolean,
         val steamDesktopUi: Boolean,
+        val fingersScroll: Boolean = false,
     )
 
     fun decide(s: Snapshot): Route {
         if (s.uiBlocking) return Route.BLOCKED
+        if (s.fingersScroll && s.mode != SessionPrefs.TOUCH_OFF) return Route.SCROLL
         if (s.mode == SessionPrefs.TOUCH_GESTURES) return Route.GESTURES
         if (s.scrollLayer) return Route.SCROLL
         if (s.mode == SessionPrefs.TOUCH_OFF) return Route.OFF

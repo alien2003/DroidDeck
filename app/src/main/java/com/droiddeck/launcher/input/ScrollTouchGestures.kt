@@ -23,6 +23,8 @@ class ScrollTouchGestures(
         fun onLongPress()
     }
 
+    var clicks = true
+
     private val handler = Handler(Looper.getMainLooper())
     private val choreographer = Choreographer.getInstance()
     private var tracker: VelocityTracker? = null
@@ -86,7 +88,7 @@ class ScrollTouchGestures(
                 lastY = startY
                 tracker = VelocityTracker.obtain().also { it.addMovement(event) }
                 listener.onMove(startX, startY)
-                handler.postDelayed(longPress, TouchTiming.HOLD_MS)
+                if (clicks) handler.postDelayed(longPress, TouchTiming.HOLD_MS)
             }
             MotionEvent.ACTION_MOVE -> {
                 val index = event.findPointerIndex(pointerId).takeIf { it >= 0 } ?: return true
@@ -112,7 +114,7 @@ class ScrollTouchGestures(
                     }
                     dragging -> listener.onButton(PointerGestures.BTN_LEFT, false)
                     held -> click(PointerGestures.BTN_RIGHT)
-                    !stoppedFling -> click(PointerGestures.BTN_LEFT)
+                    clicks && !stoppedFling -> click(PointerGestures.BTN_LEFT)
                 }
                 dragging = false
                 held = false

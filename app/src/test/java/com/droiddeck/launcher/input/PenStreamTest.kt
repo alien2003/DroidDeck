@@ -2,6 +2,7 @@ package com.droiddeck.launcher.input
 
 import android.graphics.RectF
 import android.os.Looper
+import android.os.SystemClock
 import android.view.InputDevice
 import android.view.KeyEvent
 import android.view.MotionEvent
@@ -192,6 +193,27 @@ class PenStreamTest {
         assertTrue(stream.onKey(key(KeyEvent.ACTION_DOWN, 7_000)))
         assertEquals(listOf(0 to 4_500), states())
         assertEquals(listOf(PenStream.CAP_PRESSURE), capabilities)
+    }
+
+    @Test fun aSilentHoverIsSentOutByTheWatchdogWithoutAnotherEvent() {
+        val start = SystemClock.uptimeMillis()
+        send(MotionEvent.ACTION_HOVER_ENTER, Sample(start, 100f))
+        shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(1_500))
+        send(MotionEvent.ACTION_HOVER_MOVE, Sample(start + 1_500, 110f))
+        shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(PenStream.HOVER_TIMEOUT_MS - 1))
+        assertTrue(stream.inProximity)
+        shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(1))
+        assertFalse(stream.inProximity)
+        assertEquals(listOf(PEN_IN to start.toInt(), PEN_IN to (start + 1_500).toInt(), 0 to (start + 1_500).toInt()), states())
+    }
+
+    @Test fun theWatchdogNeverEndsAContact() {
+        val start = SystemClock.uptimeMillis()
+        send(MotionEvent.ACTION_HOVER_ENTER, Sample(start, 100f))
+        send(MotionEvent.ACTION_DOWN, Sample(start + 10, 100f, pressure = 0.5f))
+        shadowOf(Looper.getMainLooper()).idleFor(Duration.ofSeconds(5))
+        assertTrue(stream.inProximity)
+        assertEquals(listOf(PEN_IN, PEN_IN or PEN_TIP), records.map { it.flags })
     }
 
     @Test fun aStrokeIsNeverTimedOut() {

@@ -187,13 +187,17 @@ One gate, `PalmGate`, in Kotlin at the window level: `SessionActivity.dispatchTo
 (trackpad, gestures, scroll, direct touch, on-screen controls, Steam touch controls); the compositor sees only
 direct touches.
 
-- **Armed** while a direct pen (touchscreen source, tool type stylus or eraser) hovers or touches, and for 400 ms
-  after its last presence. External tablets never arm it.
+- **Armed** while a direct pen (tool type stylus or eraser on the phone's own screen) hovers or touches, and for
+  400 ms after its last presence. External tablets never arm it: a pen that reports a mouse source arms only when
+  its device is built in (`InputDevice.isExternal` is false, Android 10 and later), while a plain stylus source, as
+  `adb shell input stylus` sends, counts as direct. The gate is global, so a pen on either screen arms it for both.
 - **While the pen is near** (default): a finger that goes down while the gate is armed is rejected until it lifts,
-  even after the pen leaves. When the gate goes from disarmed to armed, fingers already down are cancelled with
-  one `ACTION_CANCEL` through the view tree.
+  even after the pen leaves, and, as in Android, so is any finger that joins a stream still holding a rejected one.
+  When the gate goes from disarmed to armed, fingers already down are cancelled with one `ACTION_CANCEL` through
+  the view tree. A pen that lands in a finger stream (a pen and fingers on one device) starts its own stream there.
 - **Fingers only scroll**: as above, and whenever the pen mode is not Touch, one-finger drags scroll and finger
-  taps do nothing, so a hand on the screen can never click.
+  taps and long presses do nothing, so a hand on the screen can never click. It takes over every touch mode except
+  Off.
 - **Off**: fingers are never filtered.
 - **Always, whatever the setting**: `ACTION_CANCEL`, `UP` with `FLAG_CANCELED` and `POINTER_UP` with
   `FLAG_CANCELED` are Android's own palm decisions and cancel the finger stream without a click; the rest of that
@@ -202,7 +206,9 @@ direct touches.
   events for on-screen controls, keeps cancel and history: a cancelled `POINTER_UP` that is the only pointer left
   becomes `ACTION_CANCEL`, as in Android's own split.
 - **A hover that stops reporting** for 2 s counts as gone; the pen state machine sends proximity-out with the
-  same rule. Lifecycle cancels force the pen out.
+  same rule, from a timer, while the gate checks it at the next event. An explicit `HOVER_EXIT` is never
+  backdated, because a palm on a same-device digitizer ends the hover with a `HOVER_EXIT` that has the finger's own
+  time. Lifecycle cancels force the pen out, and so does removing its device.
 - Pen and mouse pointers are never filtered. Without a pen there is no change, and the gate does not allocate.
 
 ## Axes and buttons

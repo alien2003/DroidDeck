@@ -100,6 +100,22 @@ class ScrollTouchGesturesTest {
         assertEquals(listOf("move 400,300", "long press", "right down", "right up"), events)
     }
 
+    @Test fun withoutClicksATapAndALongPressDoNothingButADragStillScrolls() {
+        gestures.clicks = false
+        touch(MotionEvent.ACTION_DOWN, 400f, 300f)
+        advance(80)
+        touch(MotionEvent.ACTION_UP, 400f, 300f)
+        advance(100)
+        touch(MotionEvent.ACTION_DOWN, 400f, 300f)
+        advance(600)
+        touch(MotionEvent.ACTION_MOVE, 400f, 200f)
+        advance(100)
+        touch(MotionEvent.ACTION_UP, 400f, 200f)
+        advance(100)
+        assertEquals(listOf("move 400,300", "move 400,300"), events)
+        assertEquals(100f, scrolledY, 0.01f)
+    }
+
     @Test fun longPressThenMoveDragsWithTheLeftButton() {
         touch(MotionEvent.ACTION_DOWN, 400f, 300f)
         advance(600)
