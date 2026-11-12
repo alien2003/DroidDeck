@@ -62,6 +62,18 @@ between GPUs or change normal KWin device selection.
 `0003-forward-nested-scroll-source.patch` passes the host's scroll source, wheel steps and scroll stops
 through the nested backend, which upstream leaves as a TODO. Two-finger touch scrolling then reaches
 apps as touchpad scrolling, and wheel steps stay whole clicks.
+`0004-forward-nested-tablet-input.patch` gives the nested backend the host's tablet when
+`DROIDDECK_NESTED_TABLET=1`, which the desktop script supplies. Each host tablet becomes a KWin tablet
+device, so Wayland apps get tablet-v2 and X11 apps Xwayland's tablet devices, and KWin draws the pen's
+cursor while it is near. Positions go through `0001`'s mapping, and tilt follows the output's rotation.
+The change stays in the nested backend and keeps `WaylandBackend`'s layout for the Arch-built plugins.
+Apps without tablet input get KWin's pointer emulation, which the script also turns on; it has no side
+buttons, so the pen's Mouse mode is the way to right-click there.
+`0005-frame-tablet-tool-buttons.patch` ends each pen button event with a frame, so apps see a side
+button at once rather than with the next motion, and keeps the focus of a pen at the top-left pixel.
+`0006-route-tablet-tip-up-and-proximity.patch` gives the tip release to the window that got the press,
+and makes a pen that moves onto a title bar or the empty desktop leave the window it was over and enter
+the next one. Both change KWin's input code without changing an exported class.
 
 `pins/mesa/desc` keeps Mesa 26.2.4 and its actual package dependencies ahead of the rolling
 repository metadata. Mesa 26.2.5 crashes in Zink shader compilation on Thor with the selected
@@ -71,7 +83,7 @@ both build jobs verify the Arch Linux ARM signature and pinned SHA-256 as for ev
 The desktop workflow replaces the same-version `kwin_wayland` executable and `libkwin.so`; the rest
 comes from the signature-checked Arch packages. `desktop-kde.kwin.txt` records the source, patch,
 executable, library and build package hashes. Corresponding source is
-https://download.kde.org/stable/plasma/6.8.2/kwin-6.8.2.tar.xz plus the patch in this repository.
+https://download.kde.org/stable/plasma/6.8.2/kwin-6.8.2.tar.xz plus the patches in this repository.
 
 The inventories use `.gzip` rather than `.gz`: Android's asset packer expands `.gz` and strips
 its suffix. The shared local/CI runtime payload check verifies the exact APK names and bytes.

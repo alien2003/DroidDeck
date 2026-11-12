@@ -295,9 +295,10 @@ direct touches.
   before Kotlin hears about the lock.
 - **Tablet route and the pointer.** A tablet stroke does not move the host pointer: tablet focus is independent
   of the pointer in the protocol and in KWin, and every host user of the pointer position assumes it is the
-  client's `wl_pointer` position. The compositor keeps the pen position separately. The Android cursor overlay does
-  not know the route yet: it follows the pen and snaps back to the host pointer when samples pause. Hiding it on the
-  tablet route is the pen cursor policy step, which has to land before the KWin tablet gate below reaches users.
+  client's `wl_pointer` position. The compositor keeps the pen position separately. `PenCursorPolicy` hides the
+  Android cursor overlay while a pen is near on the tablet route (KWin draws the tool cursor) and, when the pen
+  leaves, restores the overlay as it was or as other input left it meanwhile; on the pointer route the overlay
+  follows the pen as before. A sample that changes nothing for a client sends that client no frame.
 - **Lifecycle.** Surface destruction calls `droiddeck_tablet_surface_gone`, which sends `proximity_out` while the
   surface still exists. Tablet cleanup runs in resource destroy handlers, because libwayland runs a client's
   destroy listener before destroying its resources.
@@ -307,7 +308,8 @@ direct touches.
 The live desktop is the Ubuntu runtime's KWin 6.6.6 (`tools/ubuntu/patches/kwin/`); the Arch desktop package
 (`tools/desktop-kde/patches/`, KWin 6.8) is the fallback. A patch for one does not apply to the other, so the
 change is carried twice: `0005-forward-nested-tablet-input.patch` for Ubuntu and
-`0004-forward-nested-tablet-input.patch` for Arch, from one design.
+`0004-forward-nested-tablet-input.patch` for Arch, from one design, each followed by two small fixes to KWin's own
+tablet handling (Ubuntu `0006`/`0007`, Arch `0005`/`0006`).
 
 - **What it adds.** In `src/backends/wayland`, a `WaylandTabletSeat` binds the host `zwp_tablet_manager_v2` (KWin's
   build already generates the client header) and creates a `WaylandTabletDevice` (`InputDevice` with
@@ -318,8 +320,7 @@ change is carried twice: `0005-forward-nested-tablet-input.patch` for Ubuntu and
   scale applies to the pen as to the pointer and touch. On 6.6, KWin stores the position of a proximity-out and of
   a tip-up as the tool's position, so those events carry the last real position.
 - **Gate.** The host tablet is bound only with `DROIDDECK_NESTED_TABLET=1`, which `droiddeck-desktop` exports next
-  to `DROIDDECK_NESTED_SCALE`. Without it nothing in the patch runs. `droiddeck-desktop` exports it only once the
-  Android cursor overlay hides on the tablet route.
+  to `DROIDDECK_NESTED_SCALE`. Without it nothing in the patch runs.
 - **Cursor.** The nested backend shows KWin's cursor through the host `wl_pointer`, which does not follow the pen.
   While a tool is in proximity, the output uses a software cursor (the mechanism pointer lock already uses), and the
   host tool cursor is hidden with `set_cursor(NULL)`. This repaints KWin's output as the pen hovers; if validation
@@ -329,8 +330,13 @@ change is carried twice: `0005-forward-nested-tablet-input.patch` for Ubuntu and
   the rest (SDL and GLFW programs, Wine on Wayland); that emulation drops side buttons, and Mouse mode is the answer
   for those programs. X11 programs need nothing: Xwayland binds tablet-v2 and creates
   `xwayland-tablet stylus/eraser` devices attached to the core pointer.
-- **ABI.** Changes stay inside `src/backends/wayland` and keep `WaylandBackend`'s layout, because the Arch package
-  replaces only `kwin_wayland` and `libkwin.so` and keeps Arch-built plugins.
+- **KWin's tablet fixes.** A side button is followed by a `frame`, so clients apply it at once; a tool at (0,0)
+  keeps its focus; the tip release goes to the window that got the press before focus moves; a tool that moves onto
+  a title bar, an internal window or the empty desktop leaves the client surface, and one that comes back gets
+  `proximity_in` again. All four reproduce on unpatched 6.6.6 and are fixed with the patches (x86 test rig).
+- **ABI.** The tablet seat stays inside `src/backends/wayland` and keeps `WaylandBackend`'s layout; the fixes touch
+  `src/input.cpp` and `src/tablet_input.*` and add a private member to `TabletInputRedirection`, which plugins do not
+  use. The Arch package replaces only `kwin_wayland` and `libkwin.so` and keeps Arch-built plugins.
 - **Rotated KWin outputs.** KWin 6.6's nested backend does not draw a rotated output correctly (fixed upstream in
   6.8), so a pen on a KWin output rotated in Plasma's display settings is not covered on the live runtime. Rotating
   the phone is handled by Android and is covered.
@@ -408,8 +414,9 @@ On the device (validation report below):
 - **The patched KWin ships in a runtime release.** Until maintainers publish one, users get pointer emulation in
   the desktop. The Ubuntu archive is not pinned, and 6.6.7 is in proposed; the patch applies to both 6.6.6 and
   6.6.7 without fuzz.
-- **KWin tablet bugs.** KWin 6.6 and 6.8 have open tablet fixes upstream (implicit grab release, repeated
-  proximity: merge requests 9785 and 9883). The host never sends a down or a button without its release.
+- **KWin tablet bugs.** KWin 6.6 and 6.8 have open tablet fixes upstream (merge requests 9785 and 9883). DroidDeck
+  carries its own minimal fixes for the cases the pen hits; they need a rebase when those merge requests land. The
+  host never sends a down or a button without its release.
 - **Programs without tablet-v2 in the desktop** depend on KWin's deprecated emulation, which drops side buttons.
   Mouse mode is the workaround.
 - **Hover cursor cost**: KWin repaints its output while a pen hovers.
