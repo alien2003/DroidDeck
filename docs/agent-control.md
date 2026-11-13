@@ -252,7 +252,7 @@ output, and the app checks it again; either refuses with `INVALID_INPUT` (exit 2
 for a gesture whose adb command would pass 60 KiB. adb hands a shell command to its server with a
 four-hex-digit length, so that command, not the 256 KiB request limit, bounds a gesture: about 7.5 s
 of a stroke in output positions at the default rate, under 5 s in fractions with pressure and tilt
-ranges. The 64 KiB comes from adb's source and is not yet measured on a device.
+ranges. On the Find N6 a 63 KiB command arrives and a 64 KiB one fails with `error: closed`.
 `NO_PEN_SINK` (exit 4) means the session runs but its screen is not open.
 
 The answer comes once the main thread has dispatched the last event:
@@ -300,12 +300,13 @@ for registration, and `rotation` counts quarter turns like `Surface.ROTATION_*`.
 that `dumpsys input` lists no internal display or that it is off, and `UINPUT_FAILED` (exit 3) that
 `uinput` stopped early; `adb logcat -s UINPUT UinputDevice` tells why.
 
-Checked on the Find N6 (Android 16) with a hand-written script before this command existed:
-`adb shell uinput -` registers such a pen without root, Android reports it as a stylus touchscreen
-with pressure, distance and tilt, and `BTN_STYLUS` shows only in `buttonState`. Not yet checked on a
-device: this command itself, the `virtual` bus, `BTN_TOOL_RUBBER`, `BTN_STYLUS2`, a rotated screen,
-whether 1 s is enough for registration, and other Android versions, whose `uinput` may not know bus or
-event names.
+Checked on the Find N6 (Android 16, unfolded, display 0 at rotation 1) with `wev` in the desktop:
+the pen registers on the `virtual` bus without root and Android attaches it to display 0; strokes end
+at the guest pixel the fractions name; pressure and tilt arrive; `--tool eraser` brings in the eraser
+tool; `primary` arrives as the Side button setting maps it; a still hover of 3 s stays in proximity.
+Not yet checked: `secondary`, rotations 0, 2 and 3, the folded outer screen, whether 1 s covers
+registration on slower phones, and other Android versions, whose `uinput` may not know bus or event
+names.
 
 ## State (schema 2)
 
