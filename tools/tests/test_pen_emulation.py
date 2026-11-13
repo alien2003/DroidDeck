@@ -139,7 +139,7 @@ class PenEmulationTest(unittest.TestCase):
     def test_a_route_change_between_strokes_leaves_the_old_route_first(self):
         self.check_case('switch', self.routing_binary)
 
-    def test_the_tablet_route_sends_surface_local_axes_and_leaves_the_pointer_where_the_pen_left(self):
+    def test_the_tablet_route_sends_surface_local_axes_and_moves_the_pointer_where_the_pen_comes_and_leaves(self):
         self.check_case('pointer', self.routing_binary)
 
     def test_the_pen_target_follows_the_pointer_order_and_the_tablet_ignores_locks(self):

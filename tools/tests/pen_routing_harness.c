@@ -159,8 +159,10 @@ static void frozen(void) {
     pen(T, 1500);
     assert(nevents == 1 && events[0].kind == RELEASE && events[0].value == BTN_LEFT && !g_grab);
     pen(T, 1500);
-    assert(nevents == 1 && g_pen.route == PEN_ROUTE_TABLET && g_pen.target == &b && ensures == 3);
-    expect(0, FRAME, NULL, &surface_b);
+    assert(nevents == 3 && g_pen.route == PEN_ROUTE_TABLET && g_pen.target == &b && ensures == 3);
+    expect(0, LEAVE, &pointer_a, &surface_a);
+    expect(1, ENTER, &pointer_b, &surface_b);
+    expect(2, FRAME, NULL, &surface_b);
     assert(last_pen.x == 500 && last_pen.y == 100 && !last_pen.down);
     pen(T | PEN_TIP, 1500);
     assert(nevents == 1 && last_pen.down);
@@ -173,8 +175,10 @@ static void frozen(void) {
     expect(0, FRAME, NULL, &surface_b);
     int before = motions;
     pen(T, 500);
-    assert(nevents == 1 && g_pen.route == PEN_ROUTE_POINTER && motions == before + 1);
+    assert(nevents == 3 && g_pen.route == PEN_ROUTE_POINTER && motions == before + 1);
     expect(0, OUT, NULL, NULL);
+    expect(1, LEAVE, &pointer_b, &surface_b);
+    expect(2, ENTER, &pointer_a, &surface_a);
 }
 
 static void no_tablet_client(void) {
@@ -208,24 +212,26 @@ static void switch_between_strokes(void) {
     atomic_store(&g_pen_caps, 1);
     tablet_taker = &client_b;
     pen(T, 1500);
-    assert(nevents == 1);
-    expect(0, FRAME, NULL, &surface_b);
-    pen(T, 500);
     assert(nevents == 2);
+    expect(0, ENTER, &pointer_b, &surface_b);
+    expect(1, FRAME, NULL, &surface_b);
+    pen(T, 500);
+    assert(nevents == 3);
     expect(0, OUT, NULL, NULL);
-    expect(1, ENTER, &pointer_a, &surface_a);
+    expect(1, LEAVE, &pointer_b, &surface_b);
+    expect(2, ENTER, &pointer_a, &surface_a);
     pen(T | PEN_RIGHT, 500);
     assert(nevents == 1 && events[0].kind == PRESS && events[0].value == BTN_RIGHT);
     pen(T, 500);
     assert(nevents == 1 && events[0].kind == RELEASE && events[0].value == BTN_RIGHT);
     pen(T, 1500);
-    assert(nevents == 1 && g_pen.buttons == 0);
-    expect(0, FRAME, NULL, &surface_b);
+    assert(nevents == 3 && g_pen.buttons == 0);
+    expect(0, LEAVE, &pointer_a, &surface_a);
+    expect(1, ENTER, &pointer_b, &surface_b);
+    expect(2, FRAME, NULL, &surface_b);
     pen(PEN_IN, 1500);
-    assert(nevents == 3);
+    assert(nevents == 1);
     expect(0, OUT, NULL, NULL);
-    expect(1, LEAVE, &pointer_a, &surface_a);
-    expect(2, ENTER, &pointer_b, &surface_b);
     pen(T, 1500);
     pen(T | PEN_CANCEL, 1500);
     assert(nevents == 1 && g_pen.route == PEN_ROUTE_NONE);
@@ -241,19 +247,21 @@ static void switch_between_strokes(void) {
     assert(nevents == 1 && events[0].kind == RELEASE && events[0].value == BTN_LEFT && g_pen.route == PEN_ROUTE_NONE);
 }
 
-static void tablet_moves_the_pointer_where_the_pen_leaves(void) {
+static void tablet_moves_the_pointer_where_the_pen_comes_and_leaves(void) {
     atomic_store(&g_pen_caps, 3);
     tablet_taker = &client_b;
     atomic_store(&g_cursor_composite, 1);
     g_ptr_x = 123; g_ptr_y = 45; g_ptr_known = 0;
     g_raw_valid = 1; g_raw_x = 7; g_raw_y = 8;
     send_pen(T | PEN_TILT | PEN_TIP | PEN_RIGHT | PEN_MIDDLE, 1500, 200, 40000, -5, -4500, 9000, 77);
-    assert(nevents == 1);
-    expect(0, FRAME, NULL, &surface_b);
+    assert(nevents == 2 && motions == 1 && renders == 1);
+    expect(0, ENTER, &pointer_b, &surface_b);
+    expect(1, FRAME, NULL, &surface_b);
     assert(last_pen.tool == BTN_TOOL_PEN && last_pen.x == 500 && last_pen.y == 200);
     assert(last_pen.pressure == 40000 && last_pen.distance == 0 && last_pen.has_tilt);
     assert(last_pen.tilt_x == -45 && last_pen.tilt_y == 90 && last_pen.down);
     assert(last_pen.buttons == (DROIDDECK_PEN_RIGHT | DROIDDECK_PEN_MIDDLE) && last_pen.time_ms == 77);
+    assert(g_ptr_x == scene_x(1500) && g_ptr_y == 200 && g_ptr_known && !g_raw_valid && !g_grab && !g_key_target);
     send_pen(T | PEN_ERASER | PEN_RIGHT, 1600.5, 125, 70000, 70000, 100, 100, -1);
     assert(nevents == 1);
     expect(0, FRAME, NULL, &surface_b);
@@ -261,21 +269,21 @@ static void tablet_moves_the_pointer_where_the_pen_leaves(void) {
     assert(last_pen.x != (int)last_pen.x);
     assert(last_pen.pressure == 65535 && last_pen.distance == 65535 && !last_pen.has_tilt && !last_pen.down);
     assert(last_pen.buttons == DROIDDECK_PEN_RIGHT && last_pen.time_ms == UINT32_MAX);
-    assert(g_ptr_x == 123 && g_ptr_y == 45 && !g_ptr_known && !renders && !motions && !g_grab && !g_key_target);
-    assert(g_raw_valid && g_raw_x == 7 && g_raw_y == 8 && !g_ptrs[0].focus && !g_ptrs[1].focus);
+    assert(g_ptr_x == scene_x(1500) && g_ptr_y == 200 && motions == 1 && renders == 1);
+    assert(!g_ptrs[0].focus && g_ptrs[1].focus == &surface_b);
     pen(0, 1600);
-    assert(nevents == 2 && motions == 1 && renders == 1);
+    assert(nevents == 1 && motions == 2 && renders == 2);
     expect(0, OUT, NULL, NULL);
-    expect(1, ENTER, &pointer_b, &surface_b);
     assert(g_ptr_x == scene_x(1600.5) && g_ptr_y == 125 && g_ptr_known && !g_raw_valid && !g_grab && !g_key_target);
     pen(0, 500);
-    assert(nevents == 0 && motions == 1 && g_ptr_x == scene_x(1600.5));
+    assert(nevents == 0 && motions == 2 && g_ptr_x == scene_x(1600.5));
     struct constraint lock = {1, &b};
     g_active_constraint = &lock;
     pen(T, 1700);
-    assert(nevents == 1 && g_pen.route == PEN_ROUTE_TABLET);
+    assert(nevents == 1 && motions == 2 && g_pen.route == PEN_ROUTE_TABLET);
+    expect(0, FRAME, NULL, &surface_b);
     pen(0, 1700);
-    assert(nevents == 1 && motions == 1 && g_ptr_x == scene_x(1600.5));
+    assert(nevents == 1 && motions == 2 && g_ptr_x == scene_x(1600.5));
     expect(0, OUT, NULL, NULL);
 }
 
@@ -322,7 +330,9 @@ static void surface_gone_orphans_the_stroke(void) {
     atomic_store(&g_pen_caps, 1);
     tablet_taker = &client_b;
     pen(T | PEN_TIP, 1500);
-    assert(nevents == 1 && g_pen.target == &b);
+    assert(nevents == 2 && g_pen.target == &b);
+    expect(0, ENTER, &pointer_b, &surface_b);
+    expect(1, FRAME, NULL, &surface_b);
     if (g_pen.target == &b) g_pen.target = NULL;
     pen(T | PEN_TIP, 1600);
     assert(nevents == 0 && g_pen.route == PEN_ROUTE_TABLET);
@@ -378,7 +388,7 @@ static void gamescope_takes_the_pointer(void) {
     assert(droiddeck_pen_route() == PEN_ROUTE_POINTER);
     gamescope = NULL;
     pen(T, 500);
-    assert(nevents == 1 && motions == 1 && g_pen.route == PEN_ROUTE_TABLET);
+    assert(nevents == 1 && motions == 2 && g_pen.route == PEN_ROUTE_TABLET);
     expect(0, FRAME, NULL, &surface_a);
     assert(droiddeck_pen_route() == PEN_ROUTE_TABLET);
 }
@@ -388,8 +398,9 @@ static void tool_switch_is_not_a_leave(void) {
     tablet_taker = &client_b;
     g_ptr_x = 123; g_ptr_y = 45;
     pen(T | PEN_RIGHT, 1500);
-    assert(nevents == 1 && g_pen.route == PEN_ROUTE_TABLET && ensures == 1 && tools_known == 1);
-    expect(0, FRAME, NULL, &surface_b);
+    assert(nevents == 2 && g_pen.route == PEN_ROUTE_TABLET && ensures == 1 && tools_known == 1);
+    expect(0, ENTER, &pointer_b, &surface_b);
+    expect(1, FRAME, NULL, &surface_b);
     assert(last_pen.tool == BTN_TOOL_PEN && last_pen.buttons == DROIDDECK_PEN_RIGHT);
     pen(T | PEN_ERASER | PEN_RIGHT, 1500);
     assert(nevents == 1 && ensures == 2 && tools_known == 3 && g_pen.route == PEN_ROUTE_TABLET && g_pen.target == &b);
@@ -400,28 +411,27 @@ static void tool_switch_is_not_a_leave(void) {
     pen(T, 1600);
     assert(nevents == 1 && last_pen.tool == BTN_TOOL_PEN && !last_pen.buttons && g_pen.route == PEN_ROUTE_TABLET);
     expect(0, FRAME, NULL, &surface_b);
-    assert(!motions && g_ptr_x == 123 && g_ptr_y == 45 && !g_ptrs[0].focus && !g_ptrs[1].focus);
+    assert(motions == 1 && g_ptr_x == scene_x(1500) && g_ptr_y == 100 && !g_ptrs[0].focus && g_ptrs[1].focus == &surface_b);
     pen(0, 1600);
-    assert(nevents == 2 && motions == 1 && g_ptr_x == scene_x(1600));
+    assert(nevents == 1 && motions == 2 && g_ptr_x == scene_x(1600));
     expect(0, OUT, NULL, NULL);
-    expect(1, ENTER, &pointer_b, &surface_b);
     tablet_taker = NULL;
     pen(T, 500);
-    assert(g_pen.route == PEN_ROUTE_POINTER && motions == 2);
+    assert(g_pen.route == PEN_ROUTE_POINTER && motions == 3);
     pen(T | PEN_ERASER, 510);
-    assert(nevents == 0 && motions == 3 && !g_pen.buttons && g_pen.route == PEN_ROUTE_POINTER);
+    assert(nevents == 0 && motions == 4 && !g_pen.buttons && g_pen.route == PEN_ROUTE_POINTER);
     pen(T | PEN_ERASER | PEN_TIP, 510);
     assert(nevents == 1 && events[0].kind == PRESS && events[0].value == BTN_RIGHT);
     pen(T | PEN_ERASER, 510);
     assert(nevents == 1 && events[0].kind == RELEASE && events[0].value == BTN_RIGHT);
     pen(T, 520);
-    assert(nevents == 0 && motions == 6 && g_pen.in && !g_pen.buttons);
+    assert(nevents == 0 && motions == 7 && g_pen.in && !g_pen.buttons);
 }
 
 int main(int argc, char **argv) {
     static const struct { const char *name; void (*run)(void); } cases[] = {
         {"frozen", frozen}, {"notablet", no_tablet_client}, {"switch", switch_between_strokes},
-        {"pointer", tablet_moves_the_pointer_where_the_pen_leaves}, {"target", target_order},
+        {"pointer", tablet_moves_the_pointer_where_the_pen_comes_and_leaves}, {"target", target_order},
         {"orphan", surface_gone_orphans_the_stroke}, {"query", query_reports_route_and_tablet_focus},
         {"gamescope", gamescope_takes_the_pointer}, {"tool", tool_switch_is_not_a_leave},
     };

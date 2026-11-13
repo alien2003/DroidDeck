@@ -190,8 +190,10 @@ a line for each.
   like a square root. KWin applies its own curve only to libinput devices, so a nested tablet gets no second curve,
   and the Plasma Drawing Tablet page lists only libinput devices and does not show the DroidDeck pen. A program's
   own curve, such as Krita's, applies on top. DroidDeck never writes Plasma's `[ButtonRebinds]`.
-- **No cursor setting.** In tablet mode KWin draws the tool cursor the app asks for (Krita's brush outline, a cross
-  by default); as a pointer the pen moves the normal cursor.
+- **No cursor setting.** In tablet mode KWin draws the tool cursor the app sets, and a cross only for an app that
+  never set one; Krita hides it and draws its brush outline in the canvas, and Xournal++'s default pen cursor is a
+  dot as wide as the stroke, hidden under the nib on a phone (its View settings offer a pen icon or a highlight).
+  As a pointer the pen moves the normal cursor.
 
 ## Palm rejection
 
@@ -334,12 +336,15 @@ direct touches.
   moves the shared pointer position, resets the relative-motion origin and publishes the cursor position for the
   Android cursor overlay. Under a program's pointer lock the compositor sends buttons only, which closes the gap
   before Kotlin hears about the lock.
-- **Tablet route and the pointer.** While the pen is near, the tablet route does not move the host pointer:
-  tablet focus is independent of the pointer in the protocol and in KWin, and every host user of the pointer
-  position assumes it is the client's `wl_pointer` position. The compositor keeps the pen position separately.
-  When the pen leaves (a tool switch is not leaving), the compositor moves the pointer to where the pen left,
-  through the normal pointer motion path (not under a pointer lock). This matches a desktop graphics tablet, where
-  the pen moves the one cursor; on the device, the cursor otherwise came back where the trackpad had left it.
+- **Tablet route and the pointer.** The tablet route moves the host pointer only when the pen comes near and when
+  it leaves, through the normal pointer motion path and not under a pointer lock; a tool switch is neither. In
+  between, tablet focus is independent of the pointer in the protocol and in KWin, and every host user of the
+  pointer position assumes it is the client's `wl_pointer` position, so the compositor keeps the pen position
+  separately. Moving the pointer to the pen before the first tablet frame gives the window under the pen a pointer
+  enter: Qt widgets learn that the cursor entered only from pointer crossings, and Krita starts a stroke only on a
+  canvas the cursor entered, so without it the first stroke after the pen had left the canvas was lost. Moving it to
+  where the pen left matches a desktop graphics tablet, where the pen moves the one cursor; on the device, the
+  cursor otherwise came back where the trackpad had left it.
   `PenCursorPolicy` hides the Android cursor overlay while a pen is near on the tablet route (KWin draws the tool
   cursor). When the pen leaves, it restores the overlay's visibility as it was or as other input left it meanwhile,
   at the pen's last position. On the pointer route the overlay follows the pen as before. A sample that changes

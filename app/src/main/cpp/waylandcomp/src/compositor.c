@@ -3652,6 +3652,11 @@ static void deliver_pen(const struct input_msg *m) {
         if (route != g_pen.route) {
             pen_end_route(time_ms);
             if (route == PEN_ROUTE_POINTER) g_raw_valid = 0;
+            if (route == PEN_ROUTE_TABLET && !(g_active_constraint && g_active_constraint->is_lock)) {
+                g_raw_valid = 0;
+                pointer_event(g_pen.x, g_pen.y, 0, 0);
+                g_raw_valid = 0;
+            }
         }
         g_pen.route = route;
         g_pen.target = target;
