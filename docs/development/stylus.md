@@ -5,7 +5,7 @@ pressure, tilt, hover, eraser, side buttons and palm rejection, with a mouse fal
 sessions that cannot take tablet input. It records the design, the measurements it rests on, the test plan
 and the open risks. The validation report for the implementation is added at the end.
 
-Status: design. Nothing described below exists in the tree yet.
+Status: implemented on the `stylus-support` branch and validated on an OPPO Find N6 (report at the end).
 
 ## Today
 
@@ -540,3 +540,46 @@ On the device (validation report below):
 - The KWin patch builds on KWin's tablet pipeline and libinput backend (GPL-2.0-or-later).
 - The tilt inverse is derived from AOSP's `TouchInputMapper.cpp` (Apache-2.0).
 - Behaviour, not code, was compared with Termux:X11, Moonlight, AVNC, Weylus and GameNative (licences above).
+
+## Validation report
+
+Device: OPPO Find N6 (Android 16, ColorOS), inner screen 2480×2248 and cover screen, OPPO touch digitizers with a
+Bluetooth pen whose side button is a key. Builds, installed as a side-by-side package: `stylus-support` at
+`2bf241627` with KWin 6.6.6 and patches `0001`-`0007` for the rounds with the real pen, and `adb765ab6` with
+`0001`-`0008` for the Krita re-check and the frame rates; Xwayland 24.1.10 with `0001`-`0003` throughout. Programs: Krita 6.0.1
+(Qt 6.10, on Wayland and on X11 through `QT_QPA_PLATFORM=xcb`), Xournal++ 1.3.3 and GIMP 3.2.2 (GTK 3 on Wayland),
+Firefox 159, `wev`, `xinput test-xi2`. A person drew with the real pen; `getevent`, `logcat`, the session logs and
+`wev` with arrival times recorded every round. `droiddeckctl input pen` and the `pen-desktop` scenario repeated the
+cases that needed exact positions.
+
+| Area | Result |
+|---|---|
+| Pressure | Krita (both platforms), Xournal++, GIMP with a pressure dynamic and Firefox pointer events follow the pressure. The Soft, Normal and Firm presets reach the client exactly: 0.6 and 0.9 arrive as 27034 and 50400 with Firm, 39321 and 58982 with Normal. |
+| Tilt | Arrives in `wev`, Krita and Firefox (`tiltX`/`tiltY`); synthetic tilt round-trips through Android's mapping. |
+| Hover | Krita draws its brush outline and no arrow; GIMP draws its outline; Firefox reports `pointermove` with `pointerType` pen. Xournal++'s default pen cursor is a stroke-wide dot hidden under the nib (see the cursor setting above). |
+| Side button and eraser | Right click opens Krita's pop-up palette and Firefox's `button=2`; Middle click arrives as `BTN_STYLUS`; Eraser while held erases in Krita, Xournal++ and GIMP, and GIMP switches tools per device. |
+| Leaving the window mid-stroke | Krita on Wayland, Xournal++ and GIMP keep the stroke and take the next one. Krita on X11 keeps the stroke but drops the strokes after it until the pen comes from another widget: Qt's xcb backend passes crossing events during a tablet grab and Krita gates strokes on them; the same code paths apply to a desktop tablet (not tested). |
+| Palm | With the pen in range, the Find N6's touch firmware already drops the palm; with Palm rejection set to near, a synthetic finger next to a hovering pen is rejected and one after the pen left is delivered. |
+| Screens | Strokes reach all four edges under the tip. With Follow screen the session rotates and the pen maps correctly at 90° and 180°, on the cover screen and after unfolding. |
+| Steam | The pen drives Big Picture as a mouse: hover moves the cursor, a tap clicks, the side button opens a menu. Fingers and pen both press the on-screen controls. |
+| No pen | Touchpad and Direct touch, picture-in-picture and a Bluetooth mouse behave as before. |
+| Agent tooling | `pen-desktop` passes on Wayland and X11 with every side-button setting it supports; `--via uinput` lands strokes on the expected guest pixels at rotation 1. |
+
+Measurements:
+
+- Pen latency from the digitizer's kernel event to `wev` receiving the tablet `down`: median 4.3 ms (3.2-5.0 ms,
+  12 taps). Finger taps in Direct mode reach clients when the finger lifts, by design of `DirectTouchHold`, so they
+  are not a latency figure.
+- Hover delivery is one client frame per digitizer report: 37 Hz with the pen held still, 114 of 118 Hz while it
+  moves. A moving hover keeps the session at 104-106 frames per second on the 120 Hz screen over `wev`, Krita on
+  Wayland and Krita on X11.
+- At the top of its range the digitizer flipped out and in five times within 600 ms (gaps of 5-14 ms); clients saw
+  one proximity in and one out, the out 53 ms after the hardware.
+
+Found and fixed during validation: the proximity flicker (`bb76d3759`), a stroke cut where it leaves Krita's canvas
+(KWin `0008`, `ebc6a6695`), and the first stroke lost after the pen left Krita's canvas (`adb765ab6`).
+
+Not verified: a desktop scale other than the one Follow screen picks, a game launched from Steam (no signed-in
+account; a program under gamescope was checked earlier), the agent pen with the game on the lower screen, the
+`secondary` button and other rotations through `--via uinput`, folding during a stroke (not possible with the pen
+on the inner screen), and any device other than the Find N6.
