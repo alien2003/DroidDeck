@@ -20,7 +20,10 @@ Steam on the desktop). The app installs it into `files/linuxfs` and runs it unde
   pen's Mouse mode is the way to right-click there. `0006` and `0007` fix KWin's own tablet handling:
   a side button reaches apps at once, a pen in the top-left corner keeps its window, the tip release
   goes to the window that got the press, and a pen that moves onto a title bar or the empty desktop
-  leaves the window it was over.
+  leaves the window it was over. `0008` is based on Xaver Hugl's fix for implicit grabs from the open
+  KWin merge request 9883 (3c07010c, KDE bug 526831), reworked for 6.6.6: a stroke that leaves a
+  subsurface such as Krita's canvas keeps going to it until the pen lifts. Its header lists what
+  differs from 9883. Drop it once Ubuntu's KWin has the fix.
 - `patches/xwayland`: `0001` and `0002` are Olivier Fourdan's upstream fixes from Xwayland 24.1.11
   (03228e00 and 0ca92fb4) for Ubuntu's 24.1.10, without which an X11 window under the pen gets no pen
   events unless the mouse pointer is over an X11 window. `0003` is DroidDeck's own and is in no

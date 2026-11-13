@@ -56,6 +56,7 @@ sudo patch -d "$work/root/build/kwin-$version" -p1 < "$here/patches/0003-forward
 sudo patch -d "$work/root/build/kwin-$version" -p1 < "$here/patches/0004-forward-nested-tablet-input.patch"
 sudo patch -d "$work/root/build/kwin-$version" -p1 < "$here/patches/0005-frame-tablet-tool-buttons.patch"
 sudo patch -d "$work/root/build/kwin-$version" -p1 < "$here/patches/0006-route-tablet-tip-up-and-proximity.patch"
+sudo patch -d "$work/root/build/kwin-$version" -p1 < "$here/patches/0007-fix-implicit-grabs-with-tablet-tools.patch"
 sudo chroot "$work/root" /usr/bin/env PATH=/usr/bin:/bin HOME=/root LC_ALL=C.UTF-8 \
     /usr/bin/cmake -S "/build/kwin-$version" -B /build/out -G Ninja \
     -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/usr -DCMAKE_INSTALL_LIBEXECDIR=lib \
@@ -81,6 +82,7 @@ grep -aq DROIDDECK_NESTED_TABLET "$out/libkwin.so.$version"
     echo "Tablet patch sha256 $(sha256sum "$here/patches/0004-forward-nested-tablet-input.patch" | cut -d' ' -f1)"
     echo "Tablet button frame patch sha256 $(sha256sum "$here/patches/0005-frame-tablet-tool-buttons.patch" | cut -d' ' -f1)"
     echo "Tablet focus patch sha256 $(sha256sum "$here/patches/0006-route-tablet-tip-up-and-proximity.patch" | cut -d' ' -f1)"
+    echo "Tablet grab patch sha256 $(sha256sum "$here/patches/0007-fix-implicit-grabs-with-tablet-tools.patch" | cut -d' ' -f1)"
     echo "Executable sha256 $(sha256sum "$out/kwin_wayland" | cut -d' ' -f1)"
     echo "Library sha256 $(sha256sum "$out/libkwin.so.$version" | cut -d' ' -f1)"
     echo 'Build packages (Arch Linux ARM signatures verified):'

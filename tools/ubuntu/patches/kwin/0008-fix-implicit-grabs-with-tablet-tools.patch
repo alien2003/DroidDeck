@@ -1,0 +1,277 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Xaver Hugl <xaver.hugl@kde.org>
+Date: Thu, 10 Sep 2026 21:42:33 +0200
+Subject: [PATCH] input: fix implicit grabs with tablet tools
+
+This fixes implicit grabs for toplevel surfaces and subsurfaces.
+
+BUG: 526831
+
+Based on commit 3c07010c from the open KWin merge request !9883
+(https://invent.kde.org/plasma/kwin/-/merge_requests/9883), modified by
+DroidDeck for 6.6.6 with DroidDeck's 0005-0007. While its tip or a
+button is down, a tool keeps the surface it was pressed on and gets
+positions relative to it. A tip release that ends an interactive move
+or resize also reaches the window. After the release the tool moves to
+the surface under the pen in that window, or leaves the window when
+the pen is over none of its surfaces, and the tablet focus follows the
+pen.
+
+Modified by DroidDeck:
+- The grab logic is reimplemented on tip and button state that
+  TabletInputRedirection keeps for every backend, instead of in
+  InputDeviceTabletTool and the libinput backend.
+  TabletToolV2Interface keeps its API (upstream's setCurrentSurface()
+  takes the tablet and accepts a null surface), so no exported class
+  changes.
+- A tip press without a held button, and a button press of a tool that
+  is not on the focused window, take the surface under the pen;
+  upstream keeps the tool's current surface.
+- A tool that leaves a window at a release enters the window under the
+  pen with its next event. Upstream's new focusUpdate(), which moves
+  the tools at once and sends up and button releases when the focus
+  changes, is not carried; 0007's focusUpdate() stays.
+- The proximity handler keeps its own choice of surface rather than
+  the grab surface (the nested backend and libinput lift the tip and
+  release the buttons before proximity_out), and sends no proximity_out
+  for a tool that has already left.
+- The autotests are not carried.
+---
+ src/input.cpp        | 74 ++++++++++++++++++++++++++++++++++++++++----
+ src/tablet_input.cpp | 21 ++++++++++++-
+ src/tablet_input.h   |  5 +++
+ 3 files changed, 93 insertions(+), 7 deletions(-)
+
+diff --git a/src/input.cpp b/src/input.cpp
+index d63e5f1..2ad3611 100644
+--- a/src/input.cpp
++++ b/src/input.cpp
+@@ -793,8 +793,9 @@ public:
+         if (!window) {
+             return false;
+         }
+-        if (!input()->tablet()->haveImplicitGrab()) {
++        if (!input()->tablet()->hasImplicitGrab(event->tool)) {
+             window->endInteractiveMoveResize();
++            return false;
+         }
+         return true;
+     }
+@@ -817,7 +818,7 @@ public:
+             return false;
+         }
+ 
+-        if (!input()->tablet()->haveImplicitGrab()) {
++        if (!input()->tablet()->hasImplicitGrab(event->tool)) {
+             window->endInteractiveMoveResize();
+         }
+ 
+@@ -2325,6 +2326,9 @@ public:
+         TabletToolV2Interface *tool = seat->tool(event->tool);
+         TabletV2Interface *tablet = seat->tablet(event->device);
+ 
++        if (event->type == TabletToolProximityEvent::LeaveProximity && !tool->currentSurface()) {
++            return true;
++        }
+         const auto [surface, surfaceLocalPos] = window->surface()->mapToInputSurface(window->mapToLocal(event->position));
+         tool->setCurrentSurface(surface);
+ 
+@@ -2367,7 +2371,8 @@ public:
+         TabletToolV2Interface *tool = seat->tool(event->tool);
+         TabletV2Interface *tablet = seat->tablet(event->device);
+ 
+-        const auto [surface, surfaceLocalPos] = window->surface()->mapToInputSurface(window->mapToLocal(event->position));
++        const QPointF localPos = window->mapToLocal(event->position);
++        SurfaceInterface *surface = toolSurface(window, tool, input()->tablet()->hasImplicitGrab(event->tool), localPos);
+         const bool surfaceChanged = tool->currentSurface() != surface;
+         const quint32 proximitySerial = tool->proximitySerial();
+         tool->setCurrentSurface(surface);
+@@ -2380,7 +2385,7 @@ public:
+         if (surfaceChanged && tool->proximitySerial() == proximitySerial) {
+             tool->sendProximityIn(tablet);
+         }
+-        tool->sendMotion(surfaceLocalPos);
++        tool->sendMotion(window->surface()->mapToChild(surface, localPos));
+ 
+         if (tool->hasCapability(TabletToolV2Interface::Pressure)) {
+             tool->sendPressure(event->pressure);
+@@ -2413,7 +2418,9 @@ public:
+         TabletToolV2Interface *tool = seat->tool(event->tool);
+         TabletV2Interface *tablet = seat->tablet(event->device);
+ 
+-        const auto [surface, surfaceLocalPos] = window->surface()->mapToInputSurface(window->mapToLocal(event->position));
++        const bool hadImplicitGrab = event->type == TabletToolTipEvent::Release || input()->tablet()->hasPressedButtons(event->tool);
++        const QPointF localPos = window->mapToLocal(event->position);
++        SurfaceInterface *surface = toolSurface(window, tool, hadImplicitGrab, localPos);
+         const bool surfaceChanged = tool->currentSurface() != surface;
+         const quint32 proximitySerial = tool->proximitySerial();
+         tool->setCurrentSurface(surface);
+@@ -2426,7 +2433,7 @@ public:
+             tool->sendProximityIn(tablet);
+         }
+         if (event->type == TabletToolTipEvent::Press) {
+-            tool->sendMotion(surfaceLocalPos);
++            tool->sendMotion(window->surface()->mapToChild(surface, localPos));
+             tool->sendDown();
+         } else {
+             tool->sendUp();
+@@ -2449,6 +2456,47 @@ public:
+         }
+ 
+         tool->sendFrame(std::chrono::duration_cast<std::chrono::milliseconds>(event->timestamp).count());
++
++        if (hadImplicitGrab && !input()->tablet()->hasImplicitGrab(event->tool)) {
++            releaseImplicitGrab(window, tool, tablet, localPos, event->timestamp);
++        }
++        return true;
++    }
++
++    SurfaceInterface *toolSurface(Window *window, TabletToolV2Interface *tool, bool implicitGrab, const QPointF &localPos) const
++    {
++        SurfaceInterface *surface = tool->currentSurface();
++        if (implicitGrab && surface && surface->mainSurface() == window->surface()) {
++            return surface;
++        }
++        return window->surface()->mapToInputSurface(localPos).first;
++    }
++
++    void releaseImplicitGrab(Window *window, TabletToolV2Interface *tool, TabletV2Interface *tablet, const QPointF &localPos, std::chrono::microseconds time)
++    {
++        SurfaceInterface *surface = window->surface()->inputSurfaceAt(localPos);
++        if (surface == tool->currentSurface()) {
++            return;
++        }
++        if (!surface) {
++            tool->sendProximityOut();
++        } else if (!moveTool(window, tool, tablet, surface, localPos)) {
++            return;
++        }
++        tool->sendFrame(std::chrono::duration_cast<std::chrono::milliseconds>(time).count());
++    }
++
++    bool moveTool(Window *window, TabletToolV2Interface *tool, TabletV2Interface *tablet, SurfaceInterface *surface, const QPointF &localPos)
++    {
++        const quint32 proximitySerial = tool->proximitySerial();
++        tool->setCurrentSurface(surface);
++        if (!tool->isClientSupported() || !tablet->isSurfaceSupported(surface)) {
++            return false;
++        }
++        if (tool->proximitySerial() == proximitySerial) {
++            tool->sendProximityIn(tablet);
++        }
++        tool->sendMotion(window->surface()->mapToChild(surface, localPos));
+         return true;
+     }
+ 
+@@ -2507,12 +2555,26 @@ public:
+     bool tabletToolButtonEvent(TabletToolButtonEvent *event) override
+     {
+         TabletToolV2Interface *tool = waylandServer()->tabletManagerV2()->seat(waylandServer()->seat())->tool(event->tool);
++        TabletV2Interface *tablet = waylandServer()->tabletManagerV2()->seat(waylandServer()->seat())->tablet(event->device);
++        Window *window = input()->tablet()->focus();
++        const bool onSurface = window && window->surface();
++        const QPointF localPos = onSurface ? window->mapToLocal(input()->tablet()->position()) : QPointF();
++        if (event->pressed && onSurface) {
++            SurfaceInterface *surface = toolSurface(window, tool, true, localPos);
++            if (surface != tool->currentSurface()) {
++                moveTool(window, tool, tablet, surface, localPos);
++            }
++        }
+         if (!tool->isClientSupported()) {
+             return false;
+         }
+         tool->sendButton(event->button, event->pressed);
+         // Clients apply a tool's buttons on frame.
+         tool->sendFrame(std::chrono::duration_cast<std::chrono::milliseconds>(event->time).count());
++
++        if (!event->pressed && !input()->tablet()->hasImplicitGrab(event->tool) && onSurface) {
++            releaseImplicitGrab(window, tool, tablet, localPos, event->time);
++        }
+         return true;
+     }
+ 
+diff --git a/src/tablet_input.cpp b/src/tablet_input.cpp
+index 14b45d1..0ac7e33 100644
+--- a/src/tablet_input.cpp
++++ b/src/tablet_input.cpp
+@@ -94,6 +94,16 @@ bool TabletInputRedirection::haveImplicitGrab() const
+     return m_tipDown || m_buttonDown;
+ }
+ 
++bool TabletInputRedirection::hasImplicitGrab(InputDeviceTabletTool *tool) const
++{
++    return m_downTools.contains(tool) || hasPressedButtons(tool);
++}
++
++bool TabletInputRedirection::hasPressedButtons(InputDeviceTabletTool *tool) const
++{
++    return m_pressedButtons.contains(tool);
++}
++
+ void TabletInputRedirection::init()
+ {
+     Q_ASSERT(!inited());
+@@ -347,8 +357,10 @@ void TabletInputRedirection::tabletToolTipEvent(const QPointF &pos, qreal pressu
+     if (tipDown) {
+         update();
+         m_tipDown = true;
++        m_downTools.insert(tool);
+     } else {
+         m_tipDown = false;
++        m_downTools.remove(tool);
+     }
+ 
+     workspace()->setActiveOutput(m_lastPosition);
+@@ -393,7 +405,12 @@ void KWin::TabletInputRedirection::tabletToolButtonEvent(uint button, bool isPre
+ 
+     ensureTabletTool(tool);
+ 
+-    m_buttonDown = isPressed;
++    if (!isPressed) {
++        m_pressedButtons.remove(tool, button);
++    } else if (!m_pressedButtons.contains(tool, button)) {
++        m_pressedButtons.insert(tool, button);
++    }
++    m_buttonDown = !m_pressedButtons.isEmpty();
+ 
+     input()->processSpies(&InputEventSpy::tabletToolButtonEvent, &event);
+     input()->processFilters(&InputEventFilter::tabletToolButtonEvent, &event);
+@@ -403,6 +420,8 @@ void KWin::TabletInputRedirection::tabletToolButtonEvent(uint button, bool isPre
+         if (auto f = focus()) {
+             f->setLastUsageSerial(waylandServer()->seat()->display()->serial());
+         }
++    } else if (!hasImplicitGrab(tool)) {
++        update();
+     }
+ }
+ 
+diff --git a/src/tablet_input.h b/src/tablet_input.h
+index 159ca88..106af3d 100644
+--- a/src/tablet_input.h
++++ b/src/tablet_input.h
+@@ -14,6 +14,7 @@
+ #include <QObject>
+ #include <QPointF>
+ #include <QPointer>
++#include <QSet>
+ 
+ namespace KWin
+ {
+@@ -62,6 +63,8 @@ public:
+     }
+ 
+     bool haveImplicitGrab() const;
++    bool hasImplicitGrab(InputDeviceTabletTool *tool) const;
++    bool hasPressedButtons(InputDeviceTabletTool *tool) const;
+ 
+ private:
+     void cleanupDecoration(Decoration::DecoratedWindowImpl *old,
+@@ -79,6 +82,8 @@ private:
+     bool m_tipDown = false;
+     bool m_buttonDown = false;
+     bool m_hasPosition = false;
++    QSet<InputDeviceTabletTool *> m_downTools;
++    QMultiHash<InputDeviceTabletTool *, uint> m_pressedButtons;
+ };
+ 
+ }

@@ -13,6 +13,8 @@ UBUNTU_TABLET = UBUNTU / "0005-forward-nested-tablet-input.patch"
 UBUNTU_CORE = [UBUNTU / "0006-frame-tablet-tool-buttons.patch", UBUNTU / "0007-route-tablet-tip-up-and-proximity.patch"]
 ARCH_TABLET = ARCH / "0004-forward-nested-tablet-input.patch"
 ARCH_CORE = [ARCH / "0005-frame-tablet-tool-buttons.patch", ARCH / "0006-route-tablet-tip-up-and-proximity.patch"]
+UBUNTU_GRAB = UBUNTU / "0008-fix-implicit-grabs-with-tablet-tools.patch"
+ARCH_GRAB = ARCH / "0007-fix-implicit-grabs-with-tablet-tools.patch"
 CORE_FILES = {"src/input.cpp", "src/tablet_input.cpp", "src/tablet_input.h"}
 
 
@@ -335,7 +337,7 @@ class TabletPatchTest(unittest.TestCase):
         self.assertEqual(ubuntu, added(ARCH_TABLET, "src/backends/wayland/wayland_tablet.cpp"))
 
     def test_the_core_fixes_stay_in_kwin_input_code_and_match_across_series(self):
-        for ubuntu, arch in zip(UBUNTU_CORE, ARCH_CORE):
+        for ubuntu, arch in zip(UBUNTU_CORE + [UBUNTU_GRAB], ARCH_CORE + [ARCH_GRAB]):
             self.assertLessEqual(set(files(ubuntu)), CORE_FILES, ubuntu.name)
             self.assertLessEqual(set(files(arch)), CORE_FILES, arch.name)
             for name in ["src/input.cpp", "src/tablet_input.h"]:
@@ -343,6 +345,8 @@ class TabletPatchTest(unittest.TestCase):
                     self.assertEqual(lines(ubuntu, "+", name), lines(arch, "+", name), name)
                     self.assertEqual(lines(ubuntu, "-", name), lines(arch, "-", name), name)
         self.assertEqual(lines(UBUNTU_CORE[1], "+", "src/tablet_input.cpp"), lines(ARCH_CORE[1], "+", "src/tablet_input.cpp"))
+        self.assertEqual(lines(UBUNTU_GRAB, "+", "src/tablet_input.cpp"), lines(ARCH_GRAB, "+", "src/tablet_input.cpp"))
+        self.assertEqual(lines(UBUNTU_GRAB, "-", "src/tablet_input.cpp"), lines(ARCH_GRAB, "-", "src/tablet_input.cpp"))
 
     def test_a_tool_button_ends_with_a_frame(self):
         self.assertIn("tool->sendButton(event->button, event->pressed);\n+        // Clients apply a tool's buttons on frame.\n"
@@ -358,6 +362,113 @@ class TabletPatchTest(unittest.TestCase):
             self.assertIn("+        tool->sendProximityOut();\n+        tool->sendFrame(0);\n", tablet)
             self.assertEqual(added(patch, "src/input.cpp").count("tool->sendProximityIn(tablet);"), 2)
 
+    def test_the_grab_backport_credits_upstream(self):
+        for patch, base in [(UBUNTU_GRAB, "6.6.6 with DroidDeck's 0005-0007"), (ARCH_GRAB, "6.8.2 with DroidDeck's 0004-0006")]:
+            text = patch.read_text()
+            head = text.splitlines()
+            self.assertEqual(head[0], "From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001", patch.name)
+            self.assertEqual(head[1:4], ["From: Xaver Hugl <xaver.hugl@kde.org>", "Date: Thu, 10 Sep 2026 21:42:33 +0200",
+                                         "Subject: [PATCH] input: fix implicit grabs with tablet tools"], patch.name)
+            message = text[:text.index("\n---\n")]
+            self.assertIn("BUG: 526831", message)
+            flat = " ".join(message.split())
+            self.assertIn("Based on commit 3c07010c from the open KWin merge request !9883", flat)
+            self.assertIn(f"modified by DroidDeck for {base}", flat)
+            changes = flat[flat.index("Modified by DroidDeck: "):]
+            for change in ["reimplemented on tip and button state that TabletInputRedirection keeps",
+                           "take the surface under the pen; upstream keeps the tool's current surface",
+                           "enters the window under the pen with its next event. Upstream's new focusUpdate()",
+                           "is not carried", "rather than the grab surface", "The autotests are not carried."]:
+                self.assertIn(change, changes, patch.name)
+            stat = head[head.index("---") + 1:]
+            stat = stat[:stat.index("")]
+            self.assertEqual([line.split("|")[0].strip() for line in stat if "|" in line], list(files(patch)), patch.name)
+
+    def test_a_pressed_tool_keeps_its_surface_until_the_release(self):
+        for patch in [UBUNTU_GRAB, ARCH_GRAB]:
+            self.assertEqual(set(files(patch)), CORE_FILES, patch.name)
+            self.assertEqual(lines(patch, "-", "src/tablet_input.h"), [], patch.name)
+            self.assertEqual(lines(patch, "+", "src/tablet_input.h"), [
+                "#include <QSet>",
+                "    bool hasImplicitGrab(InputDeviceTabletTool *tool) const;",
+                "    bool hasPressedButtons(InputDeviceTabletTool *tool) const;",
+                "    QSet<InputDeviceTabletTool *> m_downTools;",
+                "    QMultiHash<InputDeviceTabletTool *, uint> m_pressedButtons;",
+            ], patch.name)
+            input_cpp = added(patch, "src/input.cpp")
+            self.assertEqual(lines(patch, "-", "src/input.cpp"), [
+                "        if (!input()->tablet()->haveImplicitGrab()) {",
+                "        if (!input()->tablet()->haveImplicitGrab()) {",
+                "        const auto [surface, surfaceLocalPos] = window->surface()->mapToInputSurface(window->mapToLocal(event->position));",
+                "        tool->sendMotion(surfaceLocalPos);",
+                "        const auto [surface, surfaceLocalPos] = window->surface()->mapToInputSurface(window->mapToLocal(event->position));",
+                "            tool->sendMotion(surfaceLocalPos);",
+            ], patch.name)
+            surface = block(input_cpp, "    SurfaceInterface *toolSurface(", "\n    }\n")
+            self.assertIn("if (implicitGrab && surface && surface->mainSurface() == window->surface()) {\n            return surface;", surface)
+            self.assertIn("return window->surface()->mapToInputSurface(localPos).first;", surface)
+            self.assertIn("toolSurface(window, tool, input()->tablet()->hasImplicitGrab(event->tool), localPos);", input_cpp)
+            self.assertIn("const bool hadImplicitGrab = event->type == TabletToolTipEvent::Release || input()->tablet()->hasPressedButtons(event->tool);\n"
+                          "        const QPointF localPos = window->mapToLocal(event->position);\n"
+                          "        SurfaceInterface *surface = toolSurface(window, tool, hadImplicitGrab, localPos);", input_cpp)
+            self.assertEqual(input_cpp.count("window->surface()->mapToChild(surface, localPos)"), 3)
+            self.assertNotIn("setCurrentSurface(nullptr", input_cpp)
+            move = block(input_cpp, "    bool moveTool(", "tool->sendMotion(window->surface()->mapToChild(surface, localPos));\n")
+            steps = ["tool->setCurrentSurface(surface);", "if (!tool->isClientSupported() || !tablet->isSurfaceSupported(surface)) {\n            return false;",
+                     "if (tool->proximitySerial() == proximitySerial) {\n            tool->sendProximityIn(tablet);", "tool->sendMotion("]
+            positions = [move.index(step) for step in steps]
+            self.assertEqual(positions, sorted(positions), patch.name)
+            self.assertIn("+        tool->sendMotion(window->surface()->mapToChild(surface, localPos));\n         return true;\n     }\n",
+                          section(patch, "src/input.cpp"))
+            self.assertEqual(input_cpp.count("releaseImplicitGrab(window, tool, tablet, localPos, "), 2)
+            self.assertIn("if (hadImplicitGrab && !input()->tablet()->hasImplicitGrab(event->tool)) {", input_cpp)
+            self.assertIn("if (!event->pressed && !input()->tablet()->hasImplicitGrab(event->tool) && onSurface) {", input_cpp)
+            tablet = section(patch, "src/tablet_input.cpp")
+            self.assertEqual(lines(patch, "-", "src/tablet_input.cpp"), ["    m_buttonDown = isPressed;"], patch.name)
+            self.assertIn("+bool TabletInputRedirection::hasImplicitGrab(InputDeviceTabletTool *tool) const\n"
+                          "+{\n+    return m_downTools.contains(tool) || hasPressedButtons(tool);\n+}\n", tablet)
+            self.assertIn("+bool TabletInputRedirection::hasPressedButtons(InputDeviceTabletTool *tool) const\n"
+                          "+{\n+    return m_pressedButtons.contains(tool);\n+}\n", tablet)
+            self.assertIn("+    if (!isPressed) {\n+        m_pressedButtons.remove(tool, button);\n"
+                          "+    } else if (!m_pressedButtons.contains(tool, button)) {\n+        m_pressedButtons.insert(tool, button);\n+    }\n"
+                          "+    m_buttonDown = !m_pressedButtons.isEmpty();\n", tablet)
+            self.assertIn("         m_tipDown = true;\n+        m_downTools.insert(tool);\n", tablet)
+            self.assertIn("         m_tipDown = false;\n+        m_downTools.remove(tool);\n", tablet)
+
+    def test_a_release_off_the_window_leaves_it_and_the_next_press_finds_the_pen(self):
+        for patch in [UBUNTU_GRAB, ARCH_GRAB]:
+            input_cpp = added(patch, "src/input.cpp")
+            release = block(input_cpp, "    void releaseImplicitGrab(", "\n    }\n")
+            self.assertIn("SurfaceInterface *surface = window->surface()->inputSurfaceAt(localPos);\n"
+                          "        if (surface == tool->currentSurface()) {\n            return;\n        }\n"
+                          "        if (!surface) {\n            tool->sendProximityOut();\n"
+                          "        } else if (!moveTool(window, tool, tablet, surface, localPos)) {\n            return;\n        }\n"
+                          "        tool->sendFrame(std::chrono::duration_cast<std::chrono::milliseconds>(time).count());\n", release)
+            self.assertIn("        if (event->type == TabletToolProximityEvent::LeaveProximity && !tool->currentSurface()) {\n"
+                          "            return true;\n        }\n", input_cpp)
+            button = block(input_cpp, "        TabletV2Interface *tablet = waylandServer()->tabletManagerV2()->seat(waylandServer()->seat())->tablet(event->device);\n",
+                           "            releaseImplicitGrab(")
+            self.assertIn("        if (event->pressed && onSurface) {\n"
+                          "            SurfaceInterface *surface = toolSurface(window, tool, true, localPos);\n"
+                          "            if (surface != tool->currentSurface()) {\n"
+                          "                moveTool(window, tool, tablet, surface, localPos);\n", button)
+            self.assertIn("+    } else if (!hasImplicitGrab(tool)) {\n+        update();\n     }\n }\n", section(patch, "src/tablet_input.cpp"))
+
+    def test_an_interactive_move_passes_the_tip_release_on(self):
+        for patch in [UBUNTU_GRAB, ARCH_GRAB]:
+            text = section(patch, "src/input.cpp")
+            self.assertIn("-        if (!input()->tablet()->haveImplicitGrab()) {\n+        if (!input()->tablet()->hasImplicitGrab(event->tool)) {\n"
+                          "             window->endInteractiveMoveResize();\n+            return false;\n         }\n         return true;\n", text)
+            self.assertIn("-        if (!input()->tablet()->haveImplicitGrab()) {\n+        if (!input()->tablet()->hasImplicitGrab(event->tool)) {\n"
+                          "             window->endInteractiveMoveResize();\n         }\n \n", text)
+
+    def test_the_grab_backport_leaves_exported_classes_alone(self):
+        for patch in [UBUNTU_GRAB, ARCH_GRAB]:
+            self.assertNotIn("src/core/inputdevice.h", files(patch))
+            self.assertNotIn("src/wayland/tablet_v2.h", files(patch))
+            self.assertNotIn("KWIN_EXPORT", patch.read_text())
+            self.assertNotRegex(added(patch), r"(?m)^\s*//")
+
 
 class TabletPackagingTest(unittest.TestCase):
     def test_the_arch_build_applies_and_records_every_patch(self):
@@ -372,7 +483,11 @@ class TabletPackagingTest(unittest.TestCase):
     def test_the_ubuntu_build_names_the_tablet_changes(self):
         script = (ROOT / "tools/ubuntu/build-debs.sh").read_text()
         self.assertIn('for p in "$here"/patches/kwin/*.patch; do patch -p1 --forward < "$p"; done', script)
-        self.assertRegex(script, r'dch -l \+droiddeck -D resolute "[^"]*tablet input[^"]*"')
+        self.assertRegex(script, r'dch -l \+droiddeck -D resolute "[^"]*tablet input[^"]*implicit grabs[^"]*"')
+
+    def test_the_grab_backport_is_the_last_patch_of_each_series(self):
+        self.assertEqual(sorted(path.name for path in UBUNTU.glob("*.patch"))[-1], UBUNTU_GRAB.name)
+        self.assertEqual(sorted(path.name for path in ARCH.glob("*.patch"))[-1], ARCH_GRAB.name)
 
     def test_the_desktop_turns_the_tablet_and_its_pointer_fallback_on_by_default(self):
         script = (ROOT / "tools/linuxfs/desktop/droiddeck-desktop").read_text()

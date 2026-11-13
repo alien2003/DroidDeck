@@ -74,6 +74,10 @@ button at once rather than with the next motion, and keeps the focus of a pen at
 `0006-route-tablet-tip-up-and-proximity.patch` gives the tip release to the window that got the press,
 and makes a pen that moves onto a title bar or the empty desktop leave the window it was over and enter
 the next one. Both change KWin's input code without changing an exported class.
+`0007-fix-implicit-grabs-with-tablet-tools.patch` is based on Xaver Hugl's fix from the open KWin merge
+request 9883 (3c07010c, KDE bug 526831), reworked for 6.8.2 like Ubuntu's `0008`: a stroke that leaves
+a subsurface such as Krita's canvas keeps going to it until the pen lifts, and no exported class
+changes. Its header lists what differs from 9883.
 
 `pins/mesa/desc` keeps Mesa 26.2.4 and its actual package dependencies ahead of the rolling
 repository metadata. Mesa 26.2.5 crashes in Zink shader compilation on Thor with the selected

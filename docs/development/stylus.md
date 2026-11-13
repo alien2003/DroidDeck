@@ -354,7 +354,8 @@ The live desktop is the Ubuntu runtime's KWin 6.6.6 (`tools/ubuntu/patches/kwin/
 (`tools/desktop-kde/patches/`, KWin 6.8) is the fallback. A patch for one does not apply to the other, so the
 change is carried twice: `0005-forward-nested-tablet-input.patch` for Ubuntu and
 `0004-forward-nested-tablet-input.patch` for Arch, from one design, each followed by two small fixes to KWin's own
-tablet handling (Ubuntu `0006`/`0007`, Arch `0005`/`0006`).
+tablet handling (Ubuntu `0006`/`0007`, Arch `0005`/`0006`) and a fix for implicit grabs based on an upstream one
+(Ubuntu `0008`, Arch `0007`).
 
 - **What it adds.** In `src/backends/wayland`, a `WaylandTabletSeat` binds the host `zwp_tablet_manager_v2` (KWin's
   build already generates the client header) and creates a `WaylandTabletDevice` (`InputDevice` with
@@ -390,9 +391,28 @@ tablet handling (Ubuntu `0006`/`0007`, Arch `0005`/`0006`).
   keeps its focus; the tip release goes to the window that got the press before focus moves; a tool that moves onto
   a title bar, an internal window or the empty desktop leaves the client surface, and one that comes back gets
   `proximity_in` again. All four reproduce on unpatched 6.6.6 and are fixed with the patches (x86 test rig).
+- **Implicit grab.** Krita's canvas is a subsurface of its window. KWin picks the tool's surface anew for every
+  event, so a stroke that leaves the canvas gets `proximity_out` from the canvas and `proximity_in` on the window
+  without a new `down`, and Qt drops the rest of the stroke (KDE bug 526831; seen on the Find N6). The runtime
+  (6.6.6, Ubuntu `0008`) and the Arch desktop package (6.8.2, Arch `0007`) carry a fix based on Xaver Hugl's commit
+  3c07010c from the open merge request 9883: while the tip or a button is down the tool keeps the surface it was
+  pressed on and gets positions relative to it, also outside the window, and the release goes there too. A tip
+  release that ends a move the client started from the pen's `down` (a GTK header bar) reaches the client as well.
+  After the release the tool moves to the surface under the pen in the same window, or gets `proximity_out` when the
+  pen is over none of the window's surfaces; another window gets the tool with its next event, a side-button press
+  included. The grab logic is DroidDeck's own, not a copy of 9883's: it keeps the tool's tip and buttons in
+  `TabletInputRedirection` instead of `InputDeviceTabletTool`, keeps `TabletToolV2Interface`'s API, picks the
+  surface at the press position (the nested backend carries a move that comes with the press in the tip event) and
+  leaves `proximity_in` to the focus fix (Ubuntu `0007`, Arch `0006`). It does not carry 9883's new `focusUpdate()`,
+  which moves the tools to a new window at once and sends `up` and button releases when the focus changes, nor its
+  proximity handler, which keeps the grab surface (the nested backend lifts the tip and releases the buttons before
+  `proximity_out`), nor its autotests. On the x86 rig a client with a subsurface gets one `proximity_in`, `down`,
+  motion relative to the subsurface over the window and outside it, and `up` on the subsurface, where 0001-0007
+  alone send `proximity_out` and `proximity_in` mid-stroke; a client that moves its window from the pen's `down`
+  gets `up`.
 - **ABI.** The tablet seat stays inside `src/backends/wayland` and keeps `WaylandBackend`'s layout; the fixes touch
-  `src/input.cpp` and `src/tablet_input.*` and add a private member to `TabletInputRedirection`, which plugins do not
-  use. The Arch package replaces only `kwin_wayland` and `libkwin.so` and keeps Arch-built plugins.
+  `src/input.cpp` and `src/tablet_input.*` and add members to `TabletInputRedirection`, which is not exported and
+  plugins do not use. The Arch package replaces only `kwin_wayland` and `libkwin.so` and keeps Arch-built plugins.
 - **Rotated KWin outputs.** KWin 6.6's nested backend does not draw a rotated output correctly (fixed upstream in
   6.8), so a pen on a KWin output rotated in Plasma's display settings is not covered on the live runtime. Rotating
   the phone is handled by Android and is covered.
@@ -478,8 +498,10 @@ On the device (validation report below):
   the desktop. The Ubuntu archive is not pinned, and 6.6.7 is in proposed; the patch applies to both 6.6.6 and
   6.6.7 without fuzz.
 - **KWin tablet bugs.** KWin 6.6 and 6.8 have open tablet fixes upstream (merge requests 9785 and 9883). DroidDeck
-  carries its own minimal fixes for the cases the pen hits; they need a rebase when those merge requests land. The
-  host never sends a down or a button without its release.
+  carries its own minimal fixes for the cases the pen hits (Ubuntu `0006`/`0007`) and a fix based on 9883's
+  implicit-grab commit (Ubuntu `0008`, Arch `0007`), which differs from 9883 as the implicit grab item above lists.
+  Drop it when 9883 lands in the KWin a runtime ships, and rebase the others on it. The host never sends a down or a
+  button without its release.
 - **Xwayland patches.** Patches 0001-0002 can go when Ubuntu ships 24.1.11. Patch 0003 is DroidDeck's own and is in
   no Xwayland release, so the runtime rebuilds Xwayland until it is upstream and released.
 - **Programs without tablet-v2 in the desktop** depend on KWin's deprecated emulation, which drops side buttons.

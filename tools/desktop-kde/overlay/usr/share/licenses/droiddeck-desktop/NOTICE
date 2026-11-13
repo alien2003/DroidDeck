@@ -9,7 +9,8 @@ Third-party files in DroidDeck's KDE desktop package (tools/desktop-kde/overlay)
   GPL-3.0.
 
 - kwin_wayland: KWin 6.8.2, GPL-2.0-or-later. Built with DroidDeck's patches in tools/desktop-kde/patches
-  (nested scale, render node, scroll source and tablet input).
+  (nested scale, render node, scroll source and tablet input), including a tablet implicit grab fix
+  based on Xaver Hugl's KWin merge request 9883, as 0007.
   Corresponding source: https://download.kde.org/stable/plasma/6.8.2/kwin-6.8.2.tar.xz and
   https://github.com/Droid-Deck/DroidDeck/tree/main/tools/desktop-kde/patches
   (the source and the hashes of the applied patches are recorded in desktop-kde.kwin.txt beside the package).
